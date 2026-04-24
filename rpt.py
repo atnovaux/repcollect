@@ -761,6 +761,76 @@ def show_phase_status(phase: str, tools: list[str], target: str, etype: str) -> 
         print("run the tools manually, or use `rpt run -p auto` for the full chain.")
 
 
+CHAIN_MARKER = "__CHAIN__"
+
+CHAINABLE_INPUTS = {
+    ("httpx", "input"),      # chains from canvass subdomains
+    ("gowitness", "input"),  # chains from httpx urls
+}
+
+
+def gather_auto_inputs(tools: list[str], target: str, etype: str) -> dict | None:
+    """Prompt for every input needed by every tool in auto phase, upfront.
+
+    Chainable inputs (httpx input from canvass, gowitness input from httpx) are
+    stored as CHAIN_MARKER and resolved at runtime when the previous tool's
+    output exists. Returns None if aborted.
+    """
+    print("\ngathering inputs upfront — answer once, then walk away.")
+    print("press Enter to accept [default]; blank with no default = skip that tool.\n")
+
+    collected: dict[str, dict | None] = {}
+    for tool in tools:
+        prompts = TOOL_PROMPTS.get(tool, [])
+
+        # Skip prompts entirely for tools that already have output (resumable).
+        if tool_has_output(tool, target, etype):
+            print(f"[{tool}] already has output — will skip at run time\n")
+            collected[tool] = None
+            continue
+
+        if not prompts:
+            collected[tool] = {}
+            continue
+
+        print(f"[{tool}]")
+        tool_inputs: dict[str, str] = {}
+        skipped = False
+        for prompt_text, key in prompts:
+            default = prompt_default(tool, key, target, etype)
+            chainable = (tool, key) in CHAINABLE_INPUTS
+
+            if chainable and not default:
+                label = " [auto — chains from previous tool]"
+            elif default:
+                label = f" [{default}]"
+            else:
+                label = ""
+
+            try:
+                value = input(f"  {prompt_text}{label}: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\naborted.", file=sys.stderr)
+                return None
+
+            if not value:
+                if default:
+                    tool_inputs[key] = default
+                elif chainable:
+                    tool_inputs[key] = CHAIN_MARKER
+                else:
+                    print(f"  -> will skip {tool} (no input provided)")
+                    skipped = True
+                    break
+            else:
+                tool_inputs[key] = value
+
+        collected[tool] = None if skipped else tool_inputs
+        print()
+
+    return collected
+
+
 def cmd_run(args) -> int:
     etype = args.etype
     phase = args.phase
@@ -787,50 +857,64 @@ def cmd_run(args) -> int:
     if phase != "auto":
         show_phase_status(phase, tools, target, etype)
         return 0
-    print()
+
+    # Collect every tool's inputs upfront so the operator can walk away
+    # during the actual execution.
+    collected = gather_auto_inputs(tools, target, etype)
+    if collected is None:
+        return 1
+
+    print("\n" + "─" * 50)
+    print("all inputs collected. starting auto run.")
+    print("─" * 50 + "\n")
 
     succeeded = []
     failed = []
-
+    skipped = []
     bin_dir = Path.home() / "bin"
 
     for i, tool in enumerate(tools, 1):
         print(f"[{i}/{len(tools)}] {tool}")
 
-        # Resume behavior: skip tools that already have output in this engagement.
-        # Delete the subdir (or pass --force later) to re-run.
-        if tool_has_output(tool, target, etype):
-            print(f"  ✓ already has output — skipping (delete {TOOL_SUBDIR_MAP[tool]}/ to re-run)")
-            succeeded.append(tool)
-            continue
-
-        prompted = {}
-        for prompt_text, key in TOOL_PROMPTS.get(tool, []):
-            default = prompt_default(tool, key, target, etype)
-            suffix = f" [{default}]" if default else ""
-            try:
-                value = input(f"  {prompt_text}{suffix}: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\naborted.", file=sys.stderr)
-                return 1
-            if not value:
-                if default:
-                    value = default
-                else:
-                    print(f"  skipping {tool} (no input provided)")
-                    prompted = None
-                    break
-            prompted[key] = value
-
+        prompted = collected.get(tool)
         if prompted is None:
+            # Either already has output (resume) or operator left required input blank upfront.
+            if tool_has_output(tool, target, etype):
+                print(f"  ✓ already has output — skipping (delete {TOOL_SUBDIR_MAP[tool]}/ to re-run)")
+                succeeded.append(tool)
+            else:
+                print("  -> skipping (no input provided upfront)")
+                skipped.append(tool)
+            print()
             continue
 
-        tool_args = build_tool_args(tool, prompted, target)
+        # Resolve any deferred chain markers now — previous tool may have produced output.
+        resolved: dict[str, str] = {}
+        chain_missing = False
+        for key, value in prompted.items():
+            if value == CHAIN_MARKER:
+                fresh = prompt_default(tool, key, target, etype)
+                if not fresh:
+                    chain_missing = True
+                    break
+                resolved[key] = fresh
+                print(f"  chained {key} -> {fresh}")
+            else:
+                resolved[key] = value
+
+        if chain_missing:
+            print("  -> skipping (previous tool produced no output to chain from)")
+            skipped.append(tool)
+            print()
+            continue
+
+        tool_args = build_tool_args(tool, resolved, target)
         wrapper = bin_dir / tool
 
         if not wrapper.exists():
             print(f"  warning: wrapper not found at {wrapper}. skipping.")
             failed.append(tool)
+            print()
             continue
 
         env = os.environ.copy()
@@ -843,21 +927,16 @@ def cmd_run(args) -> int:
             print(f"  ✓ {tool} done")
             succeeded.append(tool)
         else:
-            print(f"  ! {tool} exited {result.returncode}")
+            print(f"  ! {tool} exited {result.returncode} — continuing")
             failed.append(tool)
-            try:
-                cont = input("  continue to next tool? [Y/n]: ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print("\naborted.", file=sys.stderr)
-                return 1
-            if cont == "n":
-                break
 
         print()
 
-    print(f"✓ phase complete: {len(succeeded)}/{len(tools)} tools succeeded")
+    print(f"✓ auto run complete: {len(succeeded)}/{len(tools)} tools succeeded")
+    if skipped:
+        print(f"  skipped:        {', '.join(skipped)}")
     if failed:
-        print(f"  failed/skipped: {', '.join(failed)}")
+        print(f"  failed:         {', '.join(failed)}")
     return 0
 
 
