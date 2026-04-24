@@ -57,7 +57,28 @@ HAS_DOTNET=0
 if command -v dotnet &>/dev/null; then
     HAS_DOTNET=1
 else
-    warn "dotnet not found. skipping TeamFiltration build."
+    echo "dotnet not found. installing..."
+    if apt-cache show dotnet-sdk-8.0 &>/dev/null 2>&1 && sudo apt install -y dotnet-sdk-8.0; then
+        HAS_DOTNET=1
+        ok "dotnet-sdk-8.0 installed via apt"
+    else
+        echo "    apt install failed, trying Microsoft install script..."
+        DOTNET_INSTALL_DIR="$HOME/.dotnet"
+        curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir "$DOTNET_INSTALL_DIR"
+        if [[ -f "$DOTNET_INSTALL_DIR/dotnet" ]]; then
+            export DOTNET_ROOT="$DOTNET_INSTALL_DIR"
+            export PATH="$PATH:$DOTNET_INSTALL_DIR:$DOTNET_INSTALL_DIR/tools"
+            if ! grep -qF 'DOTNET_ROOT' "$HOME/.bashrc" 2>/dev/null; then
+                echo "export DOTNET_ROOT=\"$DOTNET_INSTALL_DIR\"" >> "$HOME/.bashrc"
+                echo "export PATH=\"\$PATH:\$DOTNET_ROOT:\$DOTNET_ROOT/tools\"" >> "$HOME/.bashrc"
+                ok "added dotnet to PATH in ~/.bashrc"
+            fi
+            HAS_DOTNET=1
+            ok "dotnet installed via install script"
+        else
+            warn "dotnet install failed. TeamFiltration will be skipped."
+        fi
+    fi
 fi
 
 if ! grep -qF 'HOME/bin' "$HOME/.bashrc" 2>/dev/null; then
@@ -158,7 +179,7 @@ install_git() {
         local tf_proj="$dest/TeamFiltration"
         if [[ -d "$tf_proj" ]]; then
             echo "    building TeamFiltration (this may take a moment)..."
-            if dotnet publish "$tf_proj" -c Release -r linux-x64 --self-contained true &>/dev/null; then
+            if dotnet publish "$tf_proj" -c Release -r linux-x64 --self-contained true; then
                 ok "TeamFiltration (built)"
                 INSTALLED_TOOLS+=("TeamFiltration")
             else
