@@ -15,12 +15,11 @@
 4. [State Management](#4-state-management)
 5. [install.sh Specification](#5-installsh-specification)
 6. [tools.conf Format and Tool List](#6-toolsconf-format-and-tool-list)
-7. [eng Command Specification](#7-eng-command-specification)
-8. [lib/engagement.sh Shared Library](#8-libengagementsh-shared-library)
-9. [Wrapper Pattern](#9-wrapper-pattern)
-10. [Per-Tool Wrapper Specifications](#10-per-tool-wrapper-specifications)
-11. [Error Cases](#11-error-cases)
-12. [Implementation Order](#12-implementation-order)
+7. [lib/engagement.sh Shared Library](#7-libengagementsh-shared-library)
+8. [Wrapper Pattern](#8-wrapper-pattern)
+9. [Per-Tool Wrapper Specifications](#9-per-tool-wrapper-specifications)
+10. [Error Cases](#10-error-cases)
+11. [Implementation Order](#11-implementation-order)
 
 ---
 
@@ -30,7 +29,7 @@ repkit is a one-time setup tool for Kali Linux engagement boxes used in red team
 
 repkit does not run tools itself. It installs tools and then wraps them: every tool the operator calls is intercepted by a thin bash wrapper that resolves the active engagement, creates the correct output directory, and invokes the real tool with output flags hard-coded to that directory. The operator does not choose where output goes — the wrapper decides. This is intentional and non-negotiable by design.
 
-The engagement lifecycle is managed by a single Python command, `eng`, which creates engagement skeletons, switches the active target, and lists engagements.
+The engagement lifecycle (create, switch, list) is managed by `rpt` — see the repcollect top-level documentation. repkit only installs tools and the shared `lib/engagement.sh` that wrappers source; it does not ship its own engagement CLI.
 
 ---
 
@@ -39,9 +38,8 @@ The engagement lifecycle is managed by a single Python command, `eng`, which cre
 **In scope:**
 
 - Installing a fixed set of red team tools on a Kali Linux box via `install.sh`
-- Managing active engagement state via `~/.engagement` and the `eng` command
 - Wrapping each installed tool so output is forced to `~/engagements/<target>/<tool>/`
-- Creating per-engagement directory skeletons with `eng new`
+- Providing `lib/engagement.sh` helpers that wrappers use to resolve the active engagement and output directory
 
 **Out of scope:**
 
@@ -50,7 +48,7 @@ The engagement lifecycle is managed by a single Python command, `eng`, which cre
 - Remote output (e.g., writing to S3 or a shared NFS mount)
 - Reporting or artifact aggregation — that is repcollect's job
 - Windows or macOS support — Kali Linux only
-- Running as root by design — install.sh uses sudo where needed, but `eng` and wrappers run as the operator user
+- Running as root by design — install.sh uses sudo where needed, and wrappers run as the operator user
 
 ---
 
@@ -62,7 +60,6 @@ All repkit files live under `repcollect/repkit/` in the repcollect monorepo:
 repkit/
 ├── install.sh              # one-time setup script
 ├── tools.conf              # tool list with install methods
-├── eng.py                  # eng command entry point (Python 3)
 ├── wrappers/               # one bash script per tool
 │   ├── canvass
 │   ├── trufflehog
@@ -94,12 +91,11 @@ After `install.sh` runs, the operator's home directory has:
 │   ├── gowitness -> .../repkit/wrappers/gowitness
 │   ├── teamfiltration -> .../repkit/wrappers/teamfiltration
 │   ├── dig -> .../repkit/wrappers/dig
-│   ├── ffuf -> .../repkit/wrappers/ffuf
-│   └── eng -> .../repkit/eng.py
+│   └── ffuf -> .../repkit/wrappers/ffuf
 
-~/.engagement                # active target, written by eng
+~/.engagement                # active target, written by rpt
 ~/engagements/
-└── <target>/               # created by eng new
+└── <target>/               # created by rpt new
     └── ext/                # created by rpt run -t ext or ensure_engagement_dir when ENGAGEMENT_TYPE=ext
         ├── recon/
         ├── trufflehog/
@@ -114,7 +110,7 @@ After `install.sh` runs, the operator's home directory has:
         └── ffuf/
 ```
 
-> **Note:** Type subdirectories (ext/, int/) are created on demand by ensure_engagement_dir() when ENGAGEMENT_TYPE is set. eng new does not pre-create them.
+> **Note:** Type subdirectories (ext/, int/) are created on demand by ensure_engagement_dir() when ENGAGEMENT_TYPE is set. rpt new does not pre-create them.
 
 ---
 
@@ -125,14 +121,14 @@ After `install.sh` runs, the operator's home directory has:
 The active engagement is a single line of text in `~/.engagement`. The file contains only the target domain string (e.g., `acme.com`) with no trailing whitespace or newline beyond what echo writes. There is no JSON, no YAML, no additional metadata.
 
 **Location:** `$HOME/.engagement`  
-**Format:** A single line containing the target name as passed to `eng new` or `eng use`. The target name is also the directory name under `~/engagements/`.  
+**Format:** A single line containing the target name as passed to `rpt new` or `rpt use`. The target name is also the directory name under `~/engagements/`.  
 **Permissions:** Readable and writable by the operator user only (`chmod 600`).
 
-The file is created or overwritten by `eng new` and `eng use`. It is read at wrapper runtime by `lib/engagement.sh`. It is deleted by nothing — the operator removes it manually or switches with `eng use`.
+The file is created or overwritten by `rpt new` and `rpt use`. It is read at wrapper runtime by `lib/engagement.sh`. It is deleted by nothing — the operator removes it manually or switches with `rpt use`.
 
 ### 4.2 Target Name Constraints
 
-Target names must be filesystem-safe directory names. The `eng new` and `eng use` commands enforce:
+Target names must be filesystem-safe directory names. The `rpt new` and `rpt use` commands enforce:
 
 - No leading or trailing whitespace
 - No path separators (`/`)
@@ -213,22 +209,13 @@ Using `ln -sf` makes this idempotent. The symlink is overwritten if it already e
 
 After symlinking, `chmod +x` every wrapper file to ensure it is executable.
 
-**Step 6: Symlink eng**
-
-```bash
-ln -sf "$(realpath repkit/eng.py)" "$HOME/bin/eng"
-chmod +x repkit/eng.py
-```
-
-Verify that `repkit/eng.py` has a `#!/usr/bin/env python3` shebang. If it does not, print a warning.
-
-**Step 7: Print completion summary**
+**Step 6: Print completion summary**
 
 Print a summary of what was installed, what was skipped (already present), and what failed. End with instructions reminding the operator to:
 
 1. Ensure `~/bin` is in `$PATH`
-2. Run `eng new <target>` to create their first engagement
-3. Run `eng use <target>` to set the active engagement
+2. Run `rpt new <target>` to create their first engagement
+3. Run `rpt use <target>` to set the active engagement
 
 ### 5.3 Install Methods
 
@@ -379,151 +366,11 @@ go:github.com/ffuf/ffuf/v2
 
 ---
 
-## 7. eng Command Specification
-
-### 7.1 Overview
-
-`eng` is a Python 3 script located at `repkit/eng.py`. It is the sole interface for creating and switching engagements. It does not wrap any tool and does not invoke any scanner. It manages only the `~/.engagement` file and the `~/engagements/` directory tree.
-
-The script has a `#!/usr/bin/env python3` shebang and is chmod +x. It is symlinked to `~/bin/eng` by `install.sh`.
-
-### 7.2 Subcommand: `eng new <target>`
-
-**Usage:** `eng new <target>`
-
-**What it does:**
-
-1. Validates `<target>`:
-   - Must be provided (error if missing).
-   - Must not contain `/`, `\0`, or leading/trailing whitespace.
-   - Must not already exist as a directory under `~/engagements/` (error if it does; use `eng use` instead).
-2. Creates `~/engagements/<target>/` and the following subdirectories:
-   ```
-   recon/
-   trufflehog/
-   cloud/
-   roadtools/
-   s3scanner/
-   nmap/
-   httpx/
-   gowitness/
-   spray/
-   dns/
-   ffuf/
-   ```
-3. Writes `<target>` to `~/.engagement` (creates or overwrites), chmod 600.
-4. Prints confirmation:
-   ```
-   [+] engagement created: ~/engagements/<target>/
-   [+] active engagement set to: <target>
-   ```
-
-**Error cases:**
-
-| Condition | Output | Exit code |
-|---|---|---|
-| No target argument | `error: usage: eng new <target>` | 1 |
-| Target contains `/` | `error: target name must not contain path separators` | 1 |
-| Target is empty string | `error: target name must not be empty` | 1 |
-| Directory already exists | `error: engagement '<target>' already exists. use 'eng use <target>' to switch to it.` | 1 |
-| Cannot create directory | `error: could not create ~/engagements/<target>/: <os error>` | 1 |
-| Cannot write ~/.engagement | `error: could not write ~/.engagement: <os error>` | 1 |
-
-### 7.3 Subcommand: `eng use <target>`
-
-**Usage:** `eng use <target>`
-
-**What it does:**
-
-1. Validates `<target>`:
-   - Must be provided (error if missing).
-   - Must exist as a directory under `~/engagements/` (error if it does not — operator must run `eng new` first).
-2. Writes `<target>` to `~/.engagement`, chmod 600.
-3. Prints confirmation:
-   ```
-   [+] active engagement set to: <target>
-   ```
-
-**Error cases:**
-
-| Condition | Output | Exit code |
-|---|---|---|
-| No target argument | `error: usage: eng use <target>` | 1 |
-| Directory does not exist | `error: engagement '<target>' does not exist. run 'eng new <target>' to create it.` | 1 |
-| Cannot write ~/.engagement | `error: could not write ~/.engagement: <os error>` | 1 |
-
-### 7.4 Subcommand: `eng current`
-
-**Usage:** `eng current`
-
-**What it does:**
-
-Reads the active engagement from `~/.engagement` and prints the target.
-
-```
-<target>
-```
-
-**Error cases:**
-
-| Condition | Output | Exit code |
-|---|---|---|
-| `~/.engagement` does not exist | `error: no active engagement. run 'eng use <target>' first.` | 1 |
-| `~/.engagement` is empty | `error: ~/.engagement is empty. run 'eng use <target>' to set an engagement.` | 1 |
-
-### 7.5 Subcommand: `eng list`
-
-**Usage:** `eng list`
-
-**What it does:**
-
-Lists all directories under `~/engagements/`. Each entry is printed on its own line, sorted alphabetically. The active engagement (from `~/.engagement`) is marked with a `*` prefix.
-
-Example output:
-
-```
-  acme.com
-* contoso.local
-  example.org
-```
-
-If `~/engagements/` does not exist or is empty:
-
-```
-no engagements found. run 'eng new <target>' to create one.
-```
-
-If no active engagement is set, no `*` is printed (list is shown without a marker).
-
-**Error cases:**
-
-| Condition | Output | Exit code |
-|---|---|---|
-| `~/engagements/` does not exist | `no engagements found. run 'eng new <target>' to create one.` | 0 |
-| No engagements (empty directory) | `no engagements found. run 'eng new <target>' to create one.` | 0 |
-
-### 7.6 General eng Behavior
-
-- If no subcommand is given, print usage and exit 1:
-  ```
-  usage: eng <command> [args]
-  commands:
-    new <target>    create a new engagement and set it as active
-    use <target>    switch to an existing engagement
-    current         print the active engagement
-    list            list all engagements
-  ```
-- Unknown subcommands print: `error: unknown command '<cmd>'. run 'eng' for usage.` and exit 1.
-- eng never takes `--help` flags or optional arguments on subcommands (keep it simple).
-- eng is implemented in a single Python file (`eng.py`) with no external dependencies beyond the Python 3 standard library.
-
----
-
-## 8. lib/engagement.sh Shared Library
+## 7. lib/engagement.sh Shared Library
 
 All wrappers source `lib/engagement.sh` at startup. This library provides two functions used by every wrapper.
 
-### 8.1 Location and Sourcing
+### 7.1 Location and Sourcing
 
 The library is at `repkit/lib/engagement.sh`. Wrappers source it using the path relative to the wrapper's own location:
 
@@ -539,14 +386,14 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/../lib/engagement.sh"
 ```
 
-### 8.2 Function: `get_active_engagement()`
+### 7.2 Function: `get_active_engagement()`
 
 Returns the active engagement target string by printing it to stdout.
 
 **Logic:**
 
 1. If `~/.engagement` exists and is non-empty, read the first line, strip whitespace, print it, and return 0.
-2. Else print to stderr: `error: no active engagement. run 'eng use <target>' first.` and return 1.
+2. Else print to stderr: `error: no active engagement. run 'rpt use <target>' first.` and return 1.
 
 **Usage in wrappers:**
 
@@ -554,7 +401,7 @@ Returns the active engagement target string by printing it to stdout.
 TARGET=$(get_active_engagement) || exit 1
 ```
 
-### 8.3 Function: `ensure_engagement_dir()`
+### 7.3 Function: `ensure_engagement_dir()`
 
 **Signature:** `ensure_engagement_dir <tool_subdir>`
 
@@ -575,7 +422,7 @@ Creates the output directory for the active engagement, type (if set), and tool.
 OUTPUT_DIR=$(ensure_engagement_dir nmap) || exit 1
 ```
 
-### 8.4 Complete engagement.sh
+### 7.4 Complete engagement.sh
 
 ```bash
 #!/usr/bin/env bash
@@ -592,7 +439,7 @@ get_active_engagement() {
         fi
     fi
 
-    echo "error: no active engagement. run 'eng use <target>' first." >&2
+    echo "error: no active engagement. run 'rpt use <target>' first." >&2
     return 1
 }
 
@@ -622,9 +469,9 @@ ensure_engagement_dir() {
 
 ---
 
-## 9. Wrapper Pattern
+## 8. Wrapper Pattern
 
-### 9.1 What a Wrapper Does
+### 8.1 What a Wrapper Does
 
 Each wrapper in `repkit/wrappers/` is a bash script that:
 
@@ -634,17 +481,17 @@ Each wrapper in `repkit/wrappers/` is a bash script that:
 4. Passes all operator-supplied arguments through to the real tool, except arguments that conflict with output location flags (those are stripped or ignored — see per-tool notes).
 5. Exits with the real tool's exit code.
 
-### 9.2 What a Wrapper Does NOT Do
+### 8.2 What a Wrapper Does NOT Do
 
 - Wrappers do not allow the operator to override the output directory. Flags like `-o`, `-oA`, `--output` passed by the operator that conflict with the wrapper's output flags are silently dropped (filtered from `$@`) or the wrapper invokes the tool in a way that makes them irrelevant. Each wrapper documents its specific behavior.
-- Wrappers do not manage engagement lifecycle. They do not call `eng new` or write to `~/.engagement`.
+- Wrappers do not manage engagement lifecycle. They do not call `rpt new` or write to `~/.engagement`.
 - Wrappers do not parse tool output or transform results. Raw tool output goes into the engagement directory; repcollect handles parsing.
 
-### 9.3 Argument Passthrough
+### 8.3 Argument Passthrough
 
 Wrappers pass `$@` to the real tool after inserting the output flags. For tools where the operator can accidentally supply a conflicting output flag, the wrapper filters it out using a simple loop. The filter must be conservative — it only removes the specific output flag for that tool, not arbitrary arguments.
 
-### 9.4 Real Tool Binary Path
+### 8.4 Real Tool Binary Path
 
 Each wrapper invokes the real tool by its canonical binary name, with the exception of tools whose real binary is shadowed by the wrapper itself (e.g., `nmap` and `dig`). For those tools, the wrapper uses the full path to the real binary:
 
@@ -653,11 +500,11 @@ Each wrapper invokes the real tool by its canonical binary name, with the except
 
 For all other tools installed via `go install`, `pip`, or `git`, the wrapper calls the binary by name since those binaries are in `$GOPATH/bin`, the pip bin directory, or `~/tools/`, not in `~/bin/`.
 
-### 9.5 Example Wrapper (nmap)
+### 8.5 Example Wrapper (nmap)
 
 See Section 10.5 for the full nmap wrapper. This serves as the canonical example.
 
-### 9.6 Wrapper Template
+### 8.6 Wrapper Template
 
 ```bash
 #!/usr/bin/env bash
@@ -679,9 +526,9 @@ exec /path/to/real/<tool> \
 
 ---
 
-## 10. Per-Tool Wrapper Specifications
+## 9. Per-Tool Wrapper Specifications
 
-### 10.1 canvass
+### 9.1 canvass
 
 **Tool description:** Internal OSINT collection tool from the repcollect project. Accepts a target domain and writes JSON output to a specified path.
 
@@ -728,7 +575,7 @@ exec canvass --output "$OUTPUT_DIR/canvass.json" "${ARGS[@]}"
 
 ---
 
-### 10.2 trufflehog
+### 9.2 trufflehog
 
 **Tool description:** Scans git repositories, filesystems, and other sources for secrets and credentials. Distributed via pip as `trufflehog`.
 
@@ -779,7 +626,7 @@ This pattern (timestamp suffix) is used for all tools that write a single output
 
 ---
 
-### 10.3 cloud-enum
+### 9.3 cloud-enum
 
 **Tool description:** `cloud_enum` by initstring. Enumerates cloud resources across AWS, Azure, and GCP using keyword-based DNS and HTTP checks.
 
@@ -832,7 +679,7 @@ exit $?
 
 ---
 
-### 10.4 roadtools
+### 9.4 roadtools
 
 **Tool description:** ROADtools is an Azure Active Directory enumeration suite by Dirk-jan Mollema. The primary CLI commands are `roadrecon` (data collection) and `roadtx` (token acquisition).
 
@@ -902,7 +749,7 @@ exit $?
 
 ---
 
-### 10.5 s3scanner
+### 9.5 s3scanner
 
 **Tool description:** S3Scanner by sa7mon. Scans for open, misconfigured, or listable S3 buckets. Distributed via pip as `s3scanner`.
 
@@ -945,7 +792,7 @@ exit $?
 
 ---
 
-### 10.6 nmap
+### 9.6 nmap
 
 **Tool description:** Network mapper. The canonical Kali Linux network scanner.
 
@@ -1003,7 +850,7 @@ exec /usr/bin/nmap -oA "$BASENAME" "${ARGS[@]}"
 
 ---
 
-### 10.7 httpx
+### 9.7 httpx
 
 **Tool description:** Fast HTTP probe by ProjectDiscovery. Accepts a list of hosts/URLs and probes them for live HTTP services.
 
@@ -1050,7 +897,7 @@ exit $?
 
 ---
 
-### 10.8 gowitness
+### 9.8 gowitness
 
 **Tool description:** Web screenshot tool by sensepost. Takes screenshots of URLs using a headless Chrome/Chromium browser.
 
@@ -1106,7 +953,7 @@ exit $?
 
 ---
 
-### 10.9 teamfiltration
+### 9.9 teamfiltration
 
 **Tool description:** TeamFiltration by Flangvik. Enumerates and sprays Microsoft 365 / Azure AD accounts via Teams, SharePoint, and OneDrive endpoints.
 
@@ -1164,7 +1011,7 @@ install.sh checks for `dotnet` before attempting this build and prints an error 
 
 ---
 
-### 10.10 dig
+### 9.10 dig
 
 **Tool description:** DNS lookup utility from `bind9-dnsutils`. Standard DNS querying tool.
 
@@ -1201,7 +1048,7 @@ Note: `${PIPESTATUS[0]}` captures dig's exit code rather than tee's, preserving 
 
 ---
 
-### 10.11 ffuf
+### 9.11 ffuf
 
 **Tool description:** Fast web fuzzer by ffuf. Used for directory/file enumeration, parameter fuzzing, and vhost discovery.
 
@@ -1250,37 +1097,19 @@ exit $?
 
 ---
 
-## 11. Error Cases
+## 10. Error Cases
 
-### 11.1 Wrapper Error Cases
+### 10.1 Wrapper Error Cases
 
 All wrappers share these common error conditions via `lib/engagement.sh`:
 
 | Condition | Message | Exit Code |
 |---|---|---|
-| No `~/.engagement` or `~/.engagement` is empty | `error: no active engagement. run 'eng use <target>' first.` | 1 |
+| No `~/.engagement` or `~/.engagement` is empty | `error: no active engagement. run 'rpt use <target>' first.` | 1 |
 | `mkdir -p` for output directory fails | `error: could not create output directory <path>` | 1 |
 | Real binary not found | `error: <tool> not found at <path>. run install.sh.` | 1 |
 
-### 11.2 eng Error Cases
-
-| Command | Condition | Message | Exit Code |
-|---|---|---|---|
-| `eng new` | No target argument | `error: usage: eng new <target>` | 1 |
-| `eng new` | Target contains `/` | `error: target name must not contain path separators` | 1 |
-| `eng new` | Target is empty string | `error: target name must not be empty` | 1 |
-| `eng new` | Target directory already exists | `error: engagement '<target>' already exists. use 'eng use <target>' to switch to it.` | 1 |
-| `eng new` | Cannot create directory | `error: could not create ~/engagements/<target>/: <os error>` | 1 |
-| `eng new` | Cannot write `~/.engagement` | `error: could not write ~/.engagement: <os error>` | 1 |
-| `eng use` | No target argument | `error: usage: eng use <target>` | 1 |
-| `eng use` | Target directory does not exist | `error: engagement '<target>' does not exist. run 'eng new <target>' to create it.` | 1 |
-| `eng use` | Cannot write `~/.engagement` | `error: could not write ~/.engagement: <os error>` | 1 |
-| `eng current` | No `~/.engagement` | `error: no active engagement. run 'eng use <target>' first.` | 1 |
-| `eng current` | `~/.engagement` is empty | `error: ~/.engagement is empty. run 'eng use <target>' to set an engagement.` | 1 |
-| `eng list` | `~/engagements/` does not exist | `no engagements found. run 'eng new <target>' to create one.` | 0 |
-| any | Unknown subcommand | `error: unknown command '<cmd>'. run 'eng' for usage.` | 1 |
-
-### 11.3 install.sh Error Cases
+### 10.2 install.sh Error Cases
 
 | Condition | Message | Exit Code |
 |---|---|---|
@@ -1296,7 +1125,7 @@ All wrappers share these common error conditions via `lib/engagement.sh`:
 
 ---
 
-## 12. Implementation Order
+## 11. Implementation Order
 
 The following order minimizes dependencies and allows each component to be tested before the next is built.
 
@@ -1304,54 +1133,52 @@ The following order minimizes dependencies and allows each component to be teste
 
 1. **`lib/engagement.sh`** — the shared library that all wrappers depend on. Write and test `get_active_engagement()` and `ensure_engagement_dir()` in isolation before writing any wrapper.
 
-2. **`eng.py`** — the engagement management command. Implement `eng new`, `eng use`, `eng current`, `eng list` in order. Test each subcommand against a local `~/engagements/` tree. Verify `~/.engagement` is created and read correctly.
-
-3. **`tools.conf`** — write the complete tool list with all install methods. No code; just the file. Verify the format parses correctly before building install.sh around it.
+2. **`tools.conf`** — write the complete tool list with all install methods. No code; just the file. Verify the format parses correctly before building install.sh around it.
 
 ### Phase 2: install.sh
 
-4. **`install.sh`** — implement all steps. Test in a Kali VM with a clean snapshot so idempotency can be verified by running the script twice. Build in this order within the script: sanity checks, dependency checks, directory creation, apt installs, pip installs, git clones, go installs, manual notices, wrapper symlinks, eng symlink, summary.
+3. **`install.sh`** — implement all steps. Test in a Kali VM with a clean snapshot so idempotency can be verified by running the script twice. Build in this order within the script: sanity checks, dependency checks, directory creation, apt installs, pip installs, git clones, go installs, manual notices, wrapper symlinks, summary.
 
 ### Phase 3: Wrappers (in dependency order)
 
 Implement wrappers in this order, from simplest to most complex:
 
-5. **`wrappers/nmap`** — good first wrapper because `/usr/bin/nmap` is always available, `-oA` is well-understood, and argument stripping is straightforward. Validates the wrapper pattern end-to-end.
+4. **`wrappers/nmap`** — good first wrapper because `/usr/bin/nmap` is always available, `-oA` is well-understood, and argument stripping is straightforward. Validates the wrapper pattern end-to-end.
 
-6. **`wrappers/dig`** — simplest stdout-capture pattern using `tee`. Validates the `${PIPESTATUS[0]}` pattern.
+5. **`wrappers/dig`** — simplest stdout-capture pattern using `tee`. Validates the `${PIPESTATUS[0]}` pattern.
 
-7. **`wrappers/httpx`** — standard `-o` flag pattern. Requires go toolchain to be working.
+6. **`wrappers/httpx`** — standard `-o` flag pattern. Requires go toolchain to be working.
 
-8. **`wrappers/ffuf`** — standard `-o -of` pattern with two flags to strip.
+7. **`wrappers/ffuf`** — standard `-o -of` pattern with two flags to strip.
 
-9. **`wrappers/gowitness`** — two output flags (`--screenshot-path` and `--db-path`), plus subdirectory creation.
+8. **`wrappers/gowitness`** — two output flags (`--screenshot-path` and `--db-path`), plus subdirectory creation.
 
-10. **`wrappers/trufflehog`** — stdout-redirect pattern (no native output flag). Requires pip install.
+9. **`wrappers/trufflehog`** — stdout-redirect pattern (no native output flag). Requires pip install.
 
-11. **`wrappers/s3scanner`** — `--out-file` pattern. Requires pip install.
+10. **`wrappers/s3scanner`** — `--out-file` pattern. Requires pip install.
 
-12. **`wrappers/canvass`** — `--output` pattern. Requires repcollect to be installed.
+11. **`wrappers/canvass`** — `--output` pattern. Requires repcollect to be installed.
 
-13. **`wrappers/cloud-enum`** — `-l` flag with Python invocation. Requires git clone to have succeeded.
+12. **`wrappers/cloud-enum`** — `-l` flag with Python invocation. Requires git clone to have succeeded.
 
-14. **`wrappers/roadtools`** — most complex wrapper due to subcommand routing (`roadrecon gather` vs other subcommands). Implement after simpler wrappers.
+13. **`wrappers/roadtools`** — most complex wrapper due to subcommand routing (`roadrecon gather` vs other subcommands). Implement after simpler wrappers.
 
-15. **`wrappers/teamfiltration`** — requires dotnet build step. Implement last because the build is the most complex install step.
+14. **`wrappers/teamfiltration`** — requires dotnet build step. Implement last because the build is the most complex install step.
 
 ### Phase 4: Integration Testing
 
-16. Provision a clean Kali Linux VM (snapshot before install).
-17. Run `install.sh`. Verify all tools install. Verify symlinks exist in `~/bin/`.
-18. Run `eng new test.local`. Verify directory skeleton is created. Verify `~/.engagement` is written.
-19. Run each wrapper against a test target (e.g., `nmap 127.0.0.1`, `dig @8.8.8.8 google.com`). Verify output appears in `~/engagements/test.local/<tool>/`.
-20. Run `install.sh` a second time. Verify no errors and no duplicate installs.
-21. Unset `~/.engagement`. Run a wrapper. Verify the error message is printed and the wrapper exits 1.
+15. Provision a clean Kali Linux VM (snapshot before install).
+16. Run `install.sh`. Verify all tools install. Verify symlinks exist in `~/bin/`.
+17. Run `rpt new test.local`. Verify directory skeleton is created. Verify `~/.engagement` is written.
+18. Run each wrapper against a test target (e.g., `nmap 127.0.0.1`, `dig @8.8.8.8 google.com`). Verify output appears in `~/engagements/test.local/<tool>/`.
+19. Run `install.sh` a second time. Verify no errors and no duplicate installs.
+20. Unset `~/.engagement`. Run a wrapper. Verify the error message is printed and the wrapper exits 1.
 
 ---
 
-## 13. `rpt run` — Phase Orchestration
+## 12. `rpt run` — Phase Orchestration
 
-### 13.1 Overview
+### 12.1 Overview
 
 `rpt run` is a subcommand of `rpt` (in `repcollect/rpt.py`) that orchestrates running all tools for a given phase sequentially. It replaces the need to invoke each tool wrapper individually.
 
@@ -1367,7 +1194,7 @@ rpt run -t <type> -p <phase>
 | `-t` / `--type` | Yes | `ext` (more in future) | Engagement type. Determines output subfolder. |
 | `-p` / `--phase` | Yes | `recon`, `cloud`, `scanning`, `spray`, `dns`, `web` | Phase to run. Determines which tools execute. |
 
-### 13.2 Phase → Tool Mapping
+### 12.2 Phase → Tool Mapping
 
 | Phase | Tools (in order) |
 |---|---|
@@ -1378,7 +1205,7 @@ rpt run -t <type> -p <phase>
 | `dns` | dig |
 | `web` | ffuf |
 
-### 13.3 How It Works
+### 12.3 How It Works
 
 1. Resolve the active engagement from `~/.engagement` (or `-T` flag if provided). Error if not set.
 2. Set `ENGAGEMENT_TYPE=<type>` in the subprocess environment for all tool invocations.
@@ -1392,7 +1219,7 @@ rpt run -t <type> -p <phase>
 
 Output for each tool goes to `~/engagements/<target>/<type>/<tool_subdir>/` automatically via the wrapper's `ensure_engagement_dir()` call.
 
-### 13.4 Per-Tool Required Variables
+### 12.4 Per-Tool Required Variables
 
 Each tool prompts for only the variables it cannot infer from context. The active target domain is always available from `~/.engagement` and is never prompted.
 
@@ -1410,7 +1237,7 @@ Each tool prompts for only the variables it cannot infer from context. The activ
 | dig | `Domain`, `Record type` (A/MX/TXT/NS/ALL), `DNS server` (optional, default: system) |
 | ffuf | `Target URL` (with FUZZ placeholder), `Wordlist` (path) |
 
-### 13.5 Scan Type Presets for nmap
+### 12.5 Scan Type Presets for nmap
 
 When nmap is run via `rpt run`, the operator selects a scan type shorthand rather than raw nmap flags:
 
@@ -1421,7 +1248,7 @@ When nmap is run via `rpt run`, the operator selects a scan type shorthand rathe
 | `udp` | `-sU -T4 --top-ports 100` |
 | `service` | `-T4 -sV -sC` |
 
-### 13.6 Output
+### 12.6 Output
 
 Terminal output during `rpt run`:
 
@@ -1443,7 +1270,7 @@ output: ~/engagements/example.com/ext/
 ✓ phase complete: 2/2 tools succeeded
 ```
 
-### 13.7 Error Cases
+### 12.7 Error Cases
 
 | Condition | Behavior |
 |---|---|
@@ -1454,7 +1281,7 @@ output: ~/engagements/example.com/ext/
 | Tool wrapper not found in `~/bin/` | Warn, skip tool, continue |
 | Tool exits non-zero | Prompt operator: continue or abort |
 
-### 13.8 Implementation Notes
+### 12.8 Implementation Notes
 
 - `rpt run` lives in `rpt.py` as a subcommand alongside the existing bundle behavior.
 - It invokes wrapper scripts via `subprocess.run()` with the extended environment (`ENGAGEMENT_TYPE` set).

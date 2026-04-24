@@ -66,10 +66,6 @@ if [[ -d "$REPKIT_DIR/wrappers" ]]; then
         fi
     done
 fi
-if [[ -L "$BIN_DIR/eng" ]]; then
-    rm -f "$BIN_DIR/eng"
-    ok "removed symlink $BIN_DIR/eng"
-fi
 
 # ── go binaries installed by repkit ───────────────────────────────────────
 

@@ -87,12 +87,36 @@ def get_engagement_base() -> Path:
     return Path.home() / "engagements"
 
 
+ENGAGEMENT_FILE = Path.home() / ".engagement"
+
+TOOL_SUBDIRS = [
+    "recon", "trufflehog", "cloud", "roadtools", "s3scanner",
+    "nmap", "httpx", "gowitness", "spray", "dns", "ffuf",
+]
+
+
 def read_engagement_file() -> str | None:
-    f = Path.home() / ".engagement"
-    if f.exists():
-        target = f.read_text().strip()
+    if ENGAGEMENT_FILE.exists():
+        target = ENGAGEMENT_FILE.read_text().strip()
         return target if target else None
     return None
+
+
+def write_engagement_file(target: str) -> None:
+    ENGAGEMENT_FILE.write_text(target + "\n")
+    ENGAGEMENT_FILE.chmod(0o600)
+
+
+def validate_target(target: str) -> None:
+    if not target:
+        print("error: target name must not be empty", file=sys.stderr)
+        sys.exit(1)
+    if "/" in target or "\\" in target:
+        print("error: target name must not contain path separators", file=sys.stderr)
+        sys.exit(1)
+    if target != target.strip():
+        print("error: target name must not have leading or trailing whitespace", file=sys.stderr)
+        sys.exit(1)
 
 
 def get_target(args) -> str:
@@ -101,7 +125,7 @@ def get_target(args) -> str:
     target = read_engagement_file()
     if target:
         return target
-    print("error: no target specified. run 'eng use <target>' or pass -T.", file=sys.stderr)
+    print("error: no target specified. run 'rpt use <target>' or pass -T.", file=sys.stderr)
     sys.exit(1)
 
 
@@ -121,11 +145,11 @@ def load_collectors() -> list:
     return loaded
 
 
-def scan_for_tools(target_dir: Path, eng_type: str) -> tuple[list[DetectionResult], list[SkippedFile]]:
+def scan_for_tools(target_dir: Path, etype: str) -> tuple[list[DetectionResult], list[SkippedFile]]:
     mods = load_collectors()
     results = []
     skipped = []
-    type_dir = target_dir / eng_type
+    type_dir = target_dir / etype
 
     for mod in mods:
         subdir_path = type_dir / mod.SUBDIR
@@ -136,7 +160,7 @@ def scan_for_tools(target_dir: Path, eng_type: str) -> tuple[list[DetectionResul
                 subdir=mod.SUBDIR,
                 version=None,
                 found=False,
-                note=f"subdir {eng_type}/{mod.SUBDIR}/ not found",
+                note=f"subdir {etype}/{mod.SUBDIR}/ not found",
             ))
             continue
 
@@ -166,7 +190,7 @@ def scan_for_tools(target_dir: Path, eng_type: str) -> tuple[list[DetectionResul
                 subdir=mod.SUBDIR,
                 version=None,
                 found=False,
-                note=f"subdir {eng_type}/{mod.SUBDIR}/ exists but no matching files",
+                note=f"subdir {etype}/{mod.SUBDIR}/ exists but no matching files",
             ))
             continue
 
@@ -184,7 +208,7 @@ def scan_for_tools(target_dir: Path, eng_type: str) -> tuple[list[DetectionResul
     return results, skipped
 
 
-def build_manifest(target: str, date_stamp: str, eng_type: str,
+def build_manifest(target: str, date_stamp: str, etype: str,
                    detections: list[DetectionResult],
                    skipped: list[SkippedFile]) -> dict:
     import datetime
@@ -216,9 +240,9 @@ def build_manifest(target: str, date_stamp: str, eng_type: str,
         "created_at": datetime.datetime.now(datetime.timezone.utc)
                           .isoformat().replace("+00:00", "Z"),
         "engagement": {
-            "id": f"{target}-{eng_type}-{date_stamp}",
+            "id": f"{target}-{etype}-{date_stamp}",
             "target_domain": target,
-            "engagement_type": eng_type,
+            "engagement_type": etype,
             "operator": operator,
             "hostname": os.uname().nodename,
         },
@@ -231,7 +255,7 @@ def build_manifest(target: str, date_stamp: str, eng_type: str,
     }
 
 
-def create_bundle(target: str, date_stamp: str, eng_type: str,
+def create_bundle(target: str, date_stamp: str, etype: str,
                   detections: list[DetectionResult],
                   manifest: dict, fmt: str) -> Path:
     import json
@@ -240,7 +264,7 @@ def create_bundle(target: str, date_stamp: str, eng_type: str,
     import tempfile
     import zipfile
 
-    bundle_name = f"{target}-{eng_type}-{date_stamp}"
+    bundle_name = f"{target}-{etype}-{date_stamp}"
     output_path = Path(f"./{bundle_name}.{fmt}")
 
     if output_path.exists():
@@ -319,12 +343,86 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     return []
 
 
+def cmd_new(args) -> int:
+    target = args.target
+    validate_target(target)
+
+    engagements_dir = get_engagement_base()
+    target_dir = engagements_dir / target
+    if target_dir.exists():
+        print(f"error: engagement '{target}' already exists. run 'rpt use {target}' to switch to it.", file=sys.stderr)
+        return 1
+
+    try:
+        for subdir in TOOL_SUBDIRS:
+            (target_dir / subdir).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(f"error: could not create {target_dir}/: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        write_engagement_file(target)
+    except OSError as e:
+        print(f"error: could not write ~/.engagement: {e}", file=sys.stderr)
+        return 1
+
+    print(f"[+] engagement created: {target_dir}/")
+    print(f"[+] active engagement set to: {target}")
+    return 0
+
+
+def cmd_use(args) -> int:
+    target = args.target
+    validate_target(target)
+
+    target_dir = get_engagement_base() / target
+    if not target_dir.exists():
+        print(f"error: engagement '{target}' does not exist. run 'rpt new {target}' to create it.", file=sys.stderr)
+        return 1
+
+    try:
+        write_engagement_file(target)
+    except OSError as e:
+        print(f"error: could not write ~/.engagement: {e}", file=sys.stderr)
+        return 1
+
+    print(f"[+] active engagement set to: {target}")
+    return 0
+
+
+def cmd_current(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    print(target)
+    return 0
+
+
+def cmd_list(args) -> int:
+    engagements_dir = get_engagement_base()
+    if not engagements_dir.exists():
+        print("no engagements found. run 'rpt new <target>' to create one.")
+        return 0
+
+    entries = sorted(p.name for p in engagements_dir.iterdir() if p.is_dir())
+    if not entries:
+        print("no engagements found. run 'rpt new <target>' to create one.")
+        return 0
+
+    active = read_engagement_file()
+    for name in entries:
+        marker = "*" if name == active else " "
+        print(f"  {marker} {name}")
+    return 0
+
+
 def cmd_run(args) -> int:
-    eng_type = args.eng_type
+    etype = args.etype
     phase = args.phase
 
-    if eng_type not in VALID_TYPES:
-        print(f"error: unknown type '{eng_type}'. valid: {', '.join(VALID_TYPES)}", file=sys.stderr)
+    if etype not in VALID_TYPES:
+        print(f"error: unknown type '{etype}'. valid: {', '.join(VALID_TYPES)}", file=sys.stderr)
         return 1
     if phase not in PHASES:
         print(f"error: unknown phase '{phase}'. valid: {', '.join(PHASES)}", file=sys.stderr)
@@ -332,13 +430,13 @@ def cmd_run(args) -> int:
 
     target = read_engagement_file()
     if not target:
-        print("error: no active engagement. run 'eng use <target>' first.", file=sys.stderr)
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
         return 1
 
     tools = PHASES[phase]
-    print(f"rpt run — {eng_type} / {phase}")
+    print(f"rpt run — {etype} / {phase}")
     print(f"target:  {target}")
-    print(f"output:  ~/engagements/{target}/{eng_type}/\n")
+    print(f"output:  ~/engagements/{target}/{etype}/\n")
 
     succeeded = []
     failed = []
@@ -373,7 +471,7 @@ def cmd_run(args) -> int:
             continue
 
         env = os.environ.copy()
-        env["ENGAGEMENT_TYPE"] = eng_type
+        env["ENGAGEMENT_TYPE"] = etype
 
         print(f"  running {tool}...")
         result = subprocess.run([str(wrapper)] + tool_args, env=env)
@@ -401,11 +499,11 @@ def cmd_run(args) -> int:
 
 
 def cmd_collect(args) -> int:
-    eng_type = args.eng_type
+    etype = args.etype
     fmt = args.fmt
 
-    if eng_type not in VALID_TYPES:
-        print(f"error: unknown type '{eng_type}'. valid: {', '.join(VALID_TYPES)}", file=sys.stderr)
+    if etype not in VALID_TYPES:
+        print(f"error: unknown type '{etype}'. valid: {', '.join(VALID_TYPES)}", file=sys.stderr)
         return 1
 
     target = get_target(args)
@@ -415,24 +513,24 @@ def cmd_collect(args) -> int:
     if not target_dir.exists():
         print(
             f"error: engagement directory not found: {target_dir}\n"
-            f"hint: run 'eng new {target}' to create it (requires repkit)",
+            f"hint: run 'rpt new {target}' to create it",
             file=sys.stderr,
         )
         return 1
 
-    if not (target_dir / eng_type).exists():
+    if not (target_dir / etype).exists():
         print(
-            f"error: no {eng_type}/ data found under {target_dir}\n"
-            f"hint: run 'rpt run -t {eng_type} -p <phase>' first",
+            f"error: no {etype}/ data found under {target_dir}\n"
+            f"hint: run 'rpt run -t {etype} -p <phase>' first",
             file=sys.stderr,
         )
         return 1
 
     print(f"repcollect v{__version__}")
-    print(f"target:  {target}  [{eng_type}]")
-    print(f"scanning {target_dir}/{eng_type}/ ...\n")
+    print(f"target:  {target}  [{etype}]")
+    print(f"scanning {target_dir}/{etype}/ ...\n")
 
-    detections, skipped = scan_for_tools(target_dir, eng_type)
+    detections, skipped = scan_for_tools(target_dir, etype)
 
     found = [d for d in detections if d.found]
     missing = [d for d in detections if not d.found]
@@ -455,13 +553,13 @@ def cmd_collect(args) -> int:
     from datetime import date
     date_stamp = date.today().strftime("%Y%m%d")
 
-    manifest = build_manifest(target, date_stamp, eng_type, detections, skipped)
+    manifest = build_manifest(target, date_stamp, etype, detections, skipped)
 
     total_size = sum(f.size_bytes for d in found for f in d.files)
     total_files = sum(len(d.files) for d in found)
 
-    print(f"\ncreating bundle: ./{target}-{eng_type}-{date_stamp}.{fmt}")
-    output_path = create_bundle(target, date_stamp, eng_type, detections, manifest, fmt)
+    print(f"\ncreating bundle: ./{target}-{etype}-{date_stamp}.{fmt}")
+    output_path = create_bundle(target, date_stamp, etype, detections, manifest, fmt)
 
     bundle_size = output_path.stat().st_size
     if bundle_size > WARN_BUNDLE_BYTES:
@@ -478,14 +576,23 @@ def main() -> int:
     parser.add_argument("--version", action="version", version=f"rpt {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
+    new_p = subparsers.add_parser("new", help="create a new engagement and set it active")
+    new_p.add_argument("target", help="target name (e.g. acmecorp)")
+
+    use_p = subparsers.add_parser("use", help="switch to an existing engagement")
+    use_p.add_argument("target", help="target name")
+
+    subparsers.add_parser("current", help="print the active engagement")
+    subparsers.add_parser("list", help="list all engagements")
+
     run_p = subparsers.add_parser("run", help="run tools for a phase")
-    run_p.add_argument("-t", required=True, dest="eng_type", metavar="TYPE",
+    run_p.add_argument("-t", required=True, dest="etype", metavar="TYPE",
                        help=f"engagement type ({', '.join(VALID_TYPES)})")
     run_p.add_argument("-p", required=True, dest="phase", metavar="PHASE",
                        help=f"phase ({', '.join(PHASES)})")
 
     collect_p = subparsers.add_parser("collect", help="bundle tool output into an archive")
-    collect_p.add_argument("-t", required=True, dest="eng_type", metavar="TYPE",
+    collect_p.add_argument("-t", required=True, dest="etype", metavar="TYPE",
                            help=f"engagement type ({', '.join(VALID_TYPES)})")
     collect_p.add_argument("-T", "--target", help="target domain (default: from ~/.engagement)")
     collect_p.add_argument("--format", choices=["tar.gz", "zip"], default="tar.gz", dest="fmt")
@@ -496,12 +603,15 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    if args.command == "run":
-        return cmd_run(args)
-    elif args.command == "collect":
-        return cmd_collect(args)
-
-    return 1
+    dispatch = {
+        "new": cmd_new,
+        "use": cmd_use,
+        "current": cmd_current,
+        "list": cmd_list,
+        "run": cmd_run,
+        "collect": cmd_collect,
+    }
+    return dispatch[args.command](args)
 
 
 if __name__ == "__main__":

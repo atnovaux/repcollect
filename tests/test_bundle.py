@@ -9,9 +9,9 @@ import pytest
 import rpt
 
 
-def make_engagement(tmp_path, target="example.com", eng_type="ext") -> Path:
+def make_engagement(tmp_path, target="example.com", etype="ext") -> Path:
     base = tmp_path / "engagements"
-    recon = base / target / eng_type / "recon"
+    recon = base / target / etype / "recon"
     recon.mkdir(parents=True)
     (recon / "aad-raw.json").write_text('{"aad": true}')
     (recon / "dns-raw.json").write_text('{"dns": true}')

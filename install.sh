@@ -79,7 +79,10 @@ echo "════════════════════════�
 echo " all done."
 echo "══════════════════════════════════════════════"
 echo ""
-echo " run:  source ~/.bashrc  (or ~/.zshrc if you use zsh)"
-echo " then: eng new <target>"
-echo "       rpt run -t ext -p recon"
+SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+RC_FILE="~/.${SHELL_NAME}rc"
+echo " 1. reload shell:  source $RC_FILE   (or open a new terminal)"
+echo " 2. create engagement:  rpt new <target>"
+echo " 3. set active:  rpt use <target>"
+echo " 4. run a phase:  rpt run -t ext -p recon"
 echo ""

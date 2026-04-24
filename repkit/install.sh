@@ -275,13 +275,7 @@ for wrapper in "$REPKIT_DIR/wrappers/"*; do
     ok "~/bin/$(basename "$wrapper") -> $wrapper"
 done
 
-# ── Step 6: Symlink eng ─────────────────────────────────────────────────────
-
-chmod +x "$REPKIT_DIR/eng.py"
-ln -sf "$REPKIT_DIR/eng.py" "$BIN_DIR/eng"
-ok "~/bin/eng -> $REPKIT_DIR/eng.py"
-
-# ── Step 7: Summary ─────────────────────────────────────────────────────────
+# ── Step 6: Summary ─────────────────────────────────────────────────────────
 
 echo ""
 echo "══════════════════════════════════════════════"
@@ -306,7 +300,7 @@ fi
 echo ""
 echo " next steps:"
 echo "   1. source ~/.bashrc"
-echo "   2. eng new <target>   — create your first engagement"
-echo "   3. eng use <target>   — set the active engagement"
+echo "   2. rpt new <target>   — create your first engagement"
+echo "   3. rpt use <target>   — set the active engagement"
 echo "   4. rpt run -t ext -p recon   — run your first phase"
 echo ""

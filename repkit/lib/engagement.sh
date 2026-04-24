@@ -12,7 +12,7 @@ get_active_engagement() {
         fi
     fi
 
-    echo "error: no active engagement. run 'eng use <target>' first." >&2
+    echo "error: no active engagement. run 'rpt use <target>' first." >&2
     return 1
 }
 

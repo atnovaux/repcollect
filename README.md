@@ -16,8 +16,11 @@ Requires Python 3.10+. No other dependencies.
 ## Usage
 
 ```bash
-# set active engagement (via repkit)
-eng use example.com
+# create and activate an engagement
+rpt new example.com
+rpt use example.com       # switch to an existing engagement
+rpt current               # print active engagement
+rpt list                  # list all engagements
 
 # run tools for a phase
 rpt run -t ext -p recon
@@ -96,7 +99,7 @@ See [collectors/external/recon/canvass.py](collectors/external/recon/canvass.py)
 
 ## Relationships
 
-- **repkit** (`repkit/`) — installs tools and wrapper scripts, provides `eng` command
+- **repkit** (`repkit/`) — installs tools and wrapper scripts used by `rpt run`
 - **reptr** — ingests bundles produced by repcollect
 
 ## Dev
