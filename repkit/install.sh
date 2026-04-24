@@ -21,6 +21,7 @@ skip() { echo -e "        [skip]  $*"; }
 FAILED_TOOLS=()
 INSTALLED_TOOLS=()
 SKIPPED_TOOLS=()
+WARNED_TOOLS=()
 
 # ── Step 1: Sanity checks ───────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ install_git() {
     if [[ -f "$dest/go.mod" ]]; then
         if [[ $HAS_GO -eq 0 ]]; then
             warn "$repo_name: go not found, skipping build"
+            WARNED_TOOLS+=("$repo_name(no-go)")
         else
             echo "    building $repo_name (go install)..."
             if (cd "$dest" && go install ./...); then
@@ -168,11 +170,11 @@ install_git() {
             fi
         fi
     elif [[ -f "$dest/setup.py" ]] || [[ -f "$dest/pyproject.toml" ]]; then
-        "$VENV_PIP" install -e "$dest" || warn "$repo_name: pip install -e failed"
+        "$VENV_PIP" install -e "$dest" || { warn "$repo_name: pip install -e failed"; WARNED_TOOLS+=("$repo_name(pip)"); }
     elif [[ -f "$dest/requirements.txt" ]]; then
-        "$VENV_PIP" install -r "$dest/requirements.txt" || warn "$repo_name: pip requirements install failed"
+        "$VENV_PIP" install -r "$dest/requirements.txt" || { warn "$repo_name: pip requirements install failed"; WARNED_TOOLS+=("$repo_name(pip)"); }
     elif [[ -f "$dest/Makefile" ]]; then
-        make -C "$dest" || warn "$repo_name: make failed"
+        make -C "$dest" || { warn "$repo_name: make failed"; WARNED_TOOLS+=("$repo_name(make)"); }
     fi
 
     if [[ "$repo_name" == "TeamFiltration" ]] && [[ $HAS_DOTNET -eq 1 ]]; then
@@ -266,11 +268,24 @@ ok "~/bin/eng -> $REPKIT_DIR/eng.py"
 
 echo ""
 echo "══════════════════════════════════════════════"
-echo " repkit install complete"
+echo " repkit install summary"
 echo "══════════════════════════════════════════════"
-[[ ${#INSTALLED_TOOLS[@]} -gt 0 ]] && echo " installed : ${INSTALLED_TOOLS[*]}"
-[[ ${#SKIPPED_TOOLS[@]}   -gt 0 ]] && echo " skipped   : ${SKIPPED_TOOLS[*]}"
-[[ ${#FAILED_TOOLS[@]}    -gt 0 ]] && echo " failed    : ${FAILED_TOOLS[*]}"
+if [[ ${#INSTALLED_TOOLS[@]} -gt 0 ]]; then
+    echo -e "${GREEN} installed${NC}"
+    for t in "${INSTALLED_TOOLS[@]}"; do echo "   + $t"; done
+fi
+if [[ ${#SKIPPED_TOOLS[@]} -gt 0 ]]; then
+    echo " skipped (already present)"
+    for t in "${SKIPPED_TOOLS[@]}"; do echo "   = $t"; done
+fi
+if [[ ${#WARNED_TOOLS[@]} -gt 0 ]]; then
+    echo -e "${YELLOW} warnings${NC}"
+    for t in "${WARNED_TOOLS[@]}"; do echo "   ! $t"; done
+fi
+if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
+    echo -e "${RED} failed${NC}"
+    for t in "${FAILED_TOOLS[@]}"; do echo "   x $t"; done
+fi
 echo ""
 echo " next steps:"
 echo "   1. source ~/.bashrc"
