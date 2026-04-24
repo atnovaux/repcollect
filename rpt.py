@@ -37,17 +37,17 @@ FFUF_DEFAULT_WORDLISTS = [
 ]
 
 TOOL_PROMPTS = {
-    "canvass":        [("domain (e.g. example.com)", "domain")],
+    "canvass":        [("root domain (e.g. example.com)", "domain")],
     "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp)", "keywords")],
     "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
-    "s3scanner":      [("bucket names file path (or single keyword)", "input")],
-    "nmap":           [("target (IP/CIDR/hostname, or path to scope file)", "target"),
+    "s3scanner":      [("bucket names file path OR single bucket keyword", "input")],
+    "nmap":           [("target (scope file path preferred, or single IP/CIDR/hostname)", "target"),
                        ("scan type (quick/full/udp/service)", "scan_type")],
-    "httpx":          [("input: file path or single host", "input")],
-    "gowitness":      [("input: file path or single URL", "input")],
+    "httpx":          [("host list file (from canvass subdomains) — press Enter to auto-chain", "input")],
+    "gowitness":      [("URL list file (from httpx) — press Enter to auto-chain", "input")],
     "dig":            [("domain", "domain"),
                        ("record type (A/MX/TXT/NS/ANY)", "record_type")],
-    "ffuf":           [("target URL with FUZZ placeholder", "url"),
+    "ffuf":           [("target URL (MUST include FUZZ placeholder, e.g. https://example.com/FUZZ)", "url"),
                        ("wordlist path", "wordlist")],
 }
 
@@ -125,7 +125,8 @@ def write_engagement_file(target: str) -> None:
     ENGAGEMENT_FILE.chmod(0o600)
 
 
-def prompt_default(tool: str, key: str, target: str, etype: str = "ext") -> str | None:
+def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
+                   context: dict | None = None) -> str | None:
     """Return a pre-filled default for a given tool prompt, if one applies.
 
     Chains tool outputs together:
@@ -155,9 +156,16 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext") -> str 
         return "A"
 
     if tool == "httpx" and key == "input":
-        subs = _newest(base / etype / "recon", "*_subdomains.txt")
-        if subs:
-            return str(subs)
+        # If canvass ran for multiple domains, aggregate their subdomain lists.
+        recon = base / etype / "recon"
+        if recon.is_dir():
+            subs_files = list(recon.glob("*_subdomains.txt"))
+            if len(subs_files) > 1:
+                agg = aggregate_subdomains(target, etype)
+                if agg:
+                    return str(agg)
+            elif len(subs_files) == 1:
+                return str(subs_files[0])
         if has_scope:
             return str(scope)
 
@@ -168,9 +176,17 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext") -> str 
         if has_scope:
             return str(scope)
 
+    # Prefer domains.txt[0] → canvass-prompted domain → engagement name.
+    domains_list = read_domains(target)
+    primary = (
+        domains_list[0] if domains_list
+        else (context or {}).get("canvass", {}).get("domain")
+        or target
+    )
+
     if tool == "ffuf":
         if key == "url":
-            return f"https://{target}/FUZZ"
+            return f"https://{primary}/FUZZ"
         if key == "wordlist":
             for candidate in FFUF_DEFAULT_WORDLISTS:
                 if Path(candidate).is_file():
@@ -350,6 +366,14 @@ def build_summary(target: str, etype: str, date_stamp: str,
             if l.strip() and not l.strip().startswith("#")
         ]
         lines.append(f"- scope entries: {len(scope_targets)}")
+
+    domains_file = eng_root / "domains.txt"
+    if domains_file.is_file():
+        dom_list = [
+            l.strip() for l in domains_file.read_text().splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        lines.append(f"- root domains: {len(dom_list)}  ({', '.join(dom_list) if dom_list else 'none'})")
     lines.append("")
 
     # Per-tool signal extraction.
@@ -536,7 +560,7 @@ def create_bundle(target: str, date_stamp: str, etype: str,
 
         # Include engagement-level context so the bundle is self-describing.
         eng_root = get_engagement_base() / target
-        for name in ("scope.txt", "notes.md"):
+        for name in ("scope.txt", "domains.txt", "notes.md"):
             src = eng_root / name
             if src.is_file():
                 shutil.copy2(src, staging / name)
@@ -606,6 +630,62 @@ def notes_path_for(target: str) -> Path:
     return get_engagement_base() / target / "notes.md"
 
 
+def domains_path_for(target: str) -> Path:
+    return get_engagement_base() / target / "domains.txt"
+
+
+def read_domains(target: str) -> list[str]:
+    """Return non-empty, non-comment lines from domains.txt. Empty list if missing."""
+    f = domains_path_for(target)
+    if not f.is_file():
+        return []
+    return [
+        line.strip() for line in f.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def _canvass_brief_for(target: str, etype: str, domain: str) -> Path | None:
+    """Return the canvass brief path for a specific domain, or None if absent."""
+    recon = get_engagement_base() / target / etype / "recon"
+    safe = domain.replace(".", "_")
+    for ext in ("txt", "md"):
+        p = recon / f"{safe}_brief.{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def canvass_missing_domains(target: str, etype: str) -> list[str]:
+    """Subset of domains.txt entries that don't yet have a canvass brief."""
+    return [d for d in read_domains(target) if _canvass_brief_for(target, etype, d) is None]
+
+
+def aggregate_subdomains(target: str, etype: str) -> Path | None:
+    """Concat + dedupe every *_subdomains.txt in ext/recon/ into one file
+    under ~/engagements/<target>/.aggregates/ (outside ext/ so collectors ignore it).
+    Returns the aggregate path, or None if there are no subdomain files.
+    """
+    recon = get_engagement_base() / target / etype / "recon"
+    if not recon.is_dir():
+        return None
+    files = sorted(recon.glob("*_subdomains.txt"))
+    if not files:
+        return None
+    agg_dir = get_engagement_base() / target / ".aggregates"
+    agg_dir.mkdir(parents=True, exist_ok=True)
+    out = agg_dir / f"{etype}_httpx_input.txt"
+    seen: set[str] = set()
+    with out.open("w") as w:
+        for f in files:
+            for line in f.read_text(errors="replace").splitlines():
+                host = line.strip()
+                if host and host not in seen:
+                    seen.add(host)
+                    w.write(host + "\n")
+    return out
+
+
 def _open_in_editor(path: Path, template: str) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -620,6 +700,23 @@ def _open_in_editor(path: Path, template: str) -> int:
 
     print(f"error: no editor found (tried $EDITOR, nano, vi). edit manually: {path}", file=sys.stderr)
     return 1
+
+
+def cmd_domains(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt new <target>' or 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+
+    template = (
+        f"# root domains for engagement: {target}\n"
+        "# one root domain per line — canvass will run once per domain\n"
+        "# lines starting with '#' are ignored\n"
+        "# example:\n"
+        "# example.com\n"
+        "# example.io\n"
+    )
+    return _open_in_editor(domains_path_for(target), template)
 
 
 def cmd_notes(args) -> int:
@@ -780,8 +877,22 @@ def gather_auto_inputs(tools: list[str], target: str, etype: str) -> dict | None
     print("press Enter to accept [default]; blank with no default = skip that tool.\n")
 
     collected: dict[str, dict | None] = {}
+    domains_list = read_domains(target)
+
     for tool in tools:
         prompts = TOOL_PROMPTS.get(tool, [])
+
+        # Canvass gets special handling when domains.txt is populated:
+        # it iterates per domain at run time instead of prompting for one.
+        if tool == "canvass" and domains_list:
+            missing = canvass_missing_domains(target, etype)
+            if not missing:
+                print(f"[canvass] all {len(domains_list)} domain(s) from domains.txt already scanned — will skip\n")
+                collected[tool] = None
+            else:
+                print(f"[canvass] {len(missing)}/{len(domains_list)} domain(s) still to scan: {', '.join(missing)}\n")
+                collected[tool] = {"_from_domains_file": True}
+            continue
 
         # Skip prompts entirely for tools that already have output (resumable).
         if tool_has_output(tool, target, etype):
@@ -797,7 +908,7 @@ def gather_auto_inputs(tools: list[str], target: str, etype: str) -> dict | None
         tool_inputs: dict[str, str] = {}
         skipped = False
         for prompt_text, key in prompts:
-            default = prompt_default(tool, key, target, etype)
+            default = prompt_default(tool, key, target, etype, context=collected)
             chainable = (tool, key) in CHAINABLE_INPUTS
 
             if chainable and not default:
@@ -877,6 +988,35 @@ def cmd_run(args) -> int:
         print(f"[{i}/{len(tools)}] {tool}")
 
         prompted = collected.get(tool)
+
+        # Multi-domain canvass path: iterate domains.txt entries that don't
+        # yet have a brief file, run canvass once per missing domain.
+        if tool == "canvass" and isinstance(prompted, dict) and prompted.get("_from_domains_file"):
+            missing = canvass_missing_domains(target, etype)
+            if not missing:
+                print("  ✓ all domains already scanned — skipping")
+                succeeded.append(tool)
+                print()
+                continue
+            wrapper = bin_dir / tool
+            env = os.environ.copy()
+            env["ENGAGEMENT_TYPE"] = etype
+            all_ok = True
+            for d in missing:
+                print(f"  [canvass → {d}] running...")
+                rc = subprocess.run(
+                    [str(wrapper)] + build_tool_args("canvass", {"domain": d}, target),
+                    env=env, stdin=subprocess.DEVNULL,
+                ).returncode
+                if rc == 0:
+                    print(f"  ✓ canvass {d} done")
+                else:
+                    print(f"  ! canvass {d} exited {rc}")
+                    all_ok = False
+            (succeeded if all_ok else failed).append(tool)
+            print()
+            continue
+
         if prompted is None:
             # Either already has output (resume) or operator left required input blank upfront.
             if tool_has_output(tool, target, etype):
@@ -1027,6 +1167,7 @@ def main() -> int:
     subparsers.add_parser("current", help="print the active engagement")
     subparsers.add_parser("list", help="list all engagements")
     subparsers.add_parser("scope", help="edit scope.txt for the active engagement ($EDITOR / nano / vi)")
+    subparsers.add_parser("domains", help="edit domains.txt (root domains canvass iterates over)")
     subparsers.add_parser("notes", help="edit notes.md for the active engagement")
 
     run_p = subparsers.add_parser("run", help="run tools for a phase")
@@ -1053,6 +1194,7 @@ def main() -> int:
         "current": cmd_current,
         "list": cmd_list,
         "scope": cmd_scope,
+        "domains": cmd_domains,
         "notes": cmd_notes,
         "run": cmd_run,
         "collect": cmd_collect,
