@@ -466,7 +466,7 @@ def cmd_run(args) -> int:
         env["ENGAGEMENT_TYPE"] = etype
 
         print(f"  running {tool}...")
-        result = subprocess.run([str(wrapper)] + tool_args, env=env)
+        result = subprocess.run([str(wrapper)] + tool_args, env=env, stdin=subprocess.DEVNULL)
 
         if result.returncode == 0:
             print(f"  ✓ {tool} done")
