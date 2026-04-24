@@ -60,9 +60,9 @@ else
     warn "dotnet not found. skipping TeamFiltration build."
 fi
 
-if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    warn "~/bin is not in \$PATH."
-    warn "add this to your ~/.bashrc:  export PATH=\"\$HOME/bin:\$PATH\""
+if ! grep -qF 'HOME/bin' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc"
+    warn "added ~/bin to PATH in ~/.bashrc — restart your shell or run: source ~/.bashrc"
 fi
 
 # ── Step 3: Create directories + Python venv for tools ────────────────────
