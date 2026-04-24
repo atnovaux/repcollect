@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-canvass = importlib.import_module("collectors.canvass")
+canvass = importlib.import_module("collectors.external.recon.canvass")
 
 
 def make_recon_dir(tmp_path, files: dict[str, str]) -> Path:

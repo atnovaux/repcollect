@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/../lib/engagement.sh"
+
+OUTPUT_DIR=$(ensure_engagement_dir spray) || exit 1
+
+TF_BIN="$HOME/tools/TeamFiltration/TeamFiltration/bin/Release/net6.0/linux-x64/publish/TeamFiltration"
+if [[ ! -f "$TF_BIN" ]]; then
+    echo "error: TeamFiltration binary not found at $TF_BIN. run install.sh to build it." >&2
+    exit 1
+fi
+
+ARGS=()
+skip_next=0
+for arg in "$@"; do
+    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+    if [[ "$arg" == "--outdir" ]]; then skip_next=1; continue; fi
+    ARGS+=("$arg")
+done
+
+echo "[repkit] teamfiltration output -> $OUTPUT_DIR/" >&2
+"$TF_BIN" --outdir "$OUTPUT_DIR" "${ARGS[@]}"
+exit $?

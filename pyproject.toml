@@ -9,6 +9,12 @@ rpt = "rpt:main"
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[tool.setuptools.packages.find]
+include = ["collectors*"]
+
+[tool.setuptools]
+py-modules = ["rpt"]
+
 [build-system]
 requires = ["setuptools>=42"]
 build-backend = "setuptools.build_meta"

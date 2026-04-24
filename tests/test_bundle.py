@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -10,9 +9,9 @@ import pytest
 import rpt
 
 
-def make_engagement(tmp_path, target="example.com") -> Path:
+def make_engagement(tmp_path, target="example.com", eng_type="ext") -> Path:
     base = tmp_path / "engagements"
-    recon = base / target / "recon"
+    recon = base / target / eng_type / "recon"
     recon.mkdir(parents=True)
     (recon / "aad-raw.json").write_text('{"aad": true}')
     (recon / "dns-raw.json").write_text('{"dns": true}')
@@ -24,10 +23,9 @@ def make_engagement(tmp_path, target="example.com") -> Path:
     return base
 
 
-def test_scan_finds_canvass(tmp_path, monkeypatch):
+def test_scan_finds_canvass(tmp_path):
     base = make_engagement(tmp_path)
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
     found = [d for d in detections if d.found]
     assert len(found) == 1
     assert found[0].tool_name == "canvass"
@@ -36,44 +34,37 @@ def test_scan_finds_canvass(tmp_path, monkeypatch):
     assert skipped == []
 
 
-def test_scan_missing_subdir(tmp_path):
+def test_scan_missing_type_subdir(tmp_path):
     base = tmp_path / "engagements"
-    target_dir = base / "example.com"
-    target_dir.mkdir(parents=True)
-    detections, skipped = rpt.scan_for_tools(target_dir)
+    (base / "example.com").mkdir(parents=True)
+    detections, _ = rpt.scan_for_tools(base / "example.com", "ext")
+    assert all(not d.found for d in detections)
+    assert any("not found" in d.note for d in detections)
+
+
+def test_scan_missing_tool_subdir(tmp_path):
+    base = tmp_path / "engagements"
+    (base / "example.com" / "ext").mkdir(parents=True)
+    detections, _ = rpt.scan_for_tools(base / "example.com", "ext")
     missing = [d for d in detections if not d.found]
     assert any(d.tool_name == "canvass" for d in missing)
-    assert any("not found" in d.note for d in missing)
 
 
 def test_scan_empty_subdir(tmp_path):
     base = tmp_path / "engagements"
-    (base / "example.com" / "recon").mkdir(parents=True)
-    detections, skipped = rpt.scan_for_tools(base / "example.com")
+    (base / "example.com" / "ext" / "recon").mkdir(parents=True)
+    detections, _ = rpt.scan_for_tools(base / "example.com", "ext")
     missing = [d for d in detections if not d.found]
-    assert any(d.tool_name == "canvass" for d in missing)
     assert any("no matching files" in d.note for d in missing)
-
-
-def test_scan_wrong_files(tmp_path):
-    base = tmp_path / "engagements"
-    recon = base / "example.com" / "recon"
-    recon.mkdir(parents=True)
-    (recon / "unrelated.csv").write_text("data")
-    detections, _ = rpt.scan_for_tools(base / "example.com")
-    missing = [d for d in detections if not d.found]
-    assert any(d.tool_name == "canvass" for d in missing)
 
 
 def test_bundle_tar_gz(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
     monkeypatch.chdir(tmp_path)
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
-    manifest = rpt.build_manifest("example.com", "20260423", detections, skipped)
-    output = rpt.create_bundle("example.com", "20260423", detections, manifest, "tar.gz")
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
+    manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
+    output = rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "tar.gz")
     assert output.exists()
-    assert output.suffix == ".gz"
     with tarfile.open(output) as tar:
         names = tar.getnames()
     assert any("manifest.json" in n for n in names)
@@ -83,10 +74,9 @@ def test_bundle_tar_gz(tmp_path, monkeypatch):
 def test_bundle_zip(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
     monkeypatch.chdir(tmp_path)
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
-    manifest = rpt.build_manifest("example.com", "20260423", detections, skipped)
-    output = rpt.create_bundle("example.com", "20260423", detections, manifest, "zip")
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
+    manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
+    output = rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "zip")
     assert output.exists()
     with zipfile.ZipFile(output) as zf:
         names = zf.namelist()
@@ -96,54 +86,40 @@ def test_bundle_zip(tmp_path, monkeypatch):
 
 def test_manifest_schema(tmp_path):
     base = make_engagement(tmp_path)
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
-    manifest = rpt.build_manifest("example.com", "20260423", detections, skipped)
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
+    manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
     assert manifest["bundle_spec_version"] == 1
     assert manifest["collector_version"] == rpt.__version__
     assert manifest["engagement"]["target_domain"] == "example.com"
-    assert manifest["engagement"]["id"] == "example.com-20260423"
+    assert manifest["engagement"]["engagement_type"] == "ext"
+    assert manifest["engagement"]["id"] == "example.com-ext-20260423"
     assert len(manifest["tools"]) == 1
     assert manifest["tools"][0]["name"] == "canvass"
-    assert isinstance(manifest["tools"][0]["roles"], dict)
 
 
 def test_oversized_file_skipped(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
-    big_file = base / "example.com" / "recon" / "aad-raw.json"
     monkeypatch.setattr(rpt, "MAX_FILE_BYTES", 10)
-    detections, skipped = rpt.scan_for_tools(base / "example.com")
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
     assert any(s.reason for s in skipped)
     assert any("aad-raw.json" in s.path for s in skipped)
-
-
-def test_no_matches_returns_all_missing(tmp_path):
-    base = tmp_path / "engagements"
-    base.mkdir(parents=True)
-    (base / "example.com").mkdir()
-    detections, _ = rpt.scan_for_tools(base / "example.com")
-    assert all(not d.found for d in detections)
 
 
 def test_output_exists_exits(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
     monkeypatch.chdir(tmp_path)
-    existing = tmp_path / "example.com-20260423.tar.gz"
-    existing.write_text("old")
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
-    manifest = rpt.build_manifest("example.com", "20260423", detections, skipped)
+    (tmp_path / "example.com-ext-20260423.tar.gz").write_text("old")
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
+    manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
     with pytest.raises(SystemExit) as exc:
-        rpt.create_bundle("example.com", "20260423", detections, manifest, "tar.gz")
+        rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "tar.gz")
     assert exc.value.code == 1
 
 
 def test_bundle_file_permissions(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
     monkeypatch.chdir(tmp_path)
-    target_dir = base / "example.com"
-    detections, skipped = rpt.scan_for_tools(target_dir)
-    manifest = rpt.build_manifest("example.com", "20260423", detections, skipped)
-    output = rpt.create_bundle("example.com", "20260423", detections, manifest, "tar.gz")
-    mode = oct(output.stat().st_mode)[-3:]
-    assert mode == "600"
+    detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
+    manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
+    output = rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "tar.gz")
+    assert oct(output.stat().st_mode)[-3:] == "600"

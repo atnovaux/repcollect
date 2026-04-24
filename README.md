@@ -1,98 +1,103 @@
 # repcollect
 
-Collects scattered red team tool outputs from an engagement box and bundles them into a single transferable artifact for ingestion by reptr.
+Collects red team tool outputs from an engagement box and bundles them into a single transferable artifact for ingestion by reptr.
 
 ## Install
 
 ```bash
 git clone <repo>
 cd repcollect
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./install.sh
+source ~/.bashrc
 ```
 
-Requires Python 3.10+. No external dependencies.
-
-Add `source ~/repcollect/.venv/bin/activate` to your `.bashrc` to have `rpt` available in every session.
+Requires Python 3.10+. No other dependencies.
 
 ## Usage
 
 ```bash
-# Uses $ENGAGEMENT env var
-rpt
+# set active engagement (via repkit)
+eng use example.com
 
-# Explicit target
-rpt --target example.com
+# run tools for a phase
+rpt run -t ext -p recon
+rpt run -t ext -p cloud
+rpt run -t ext -p scanning
 
-# Zip instead of tar.gz
-rpt --target example.com --format zip
+# bundle everything into an archive
+rpt collect -t ext
+
+# explicit target override
+rpt collect -t ext -T example.com
+
+# zip instead of tar.gz
+rpt collect -t ext --format zip
 ```
 
-## Environment variables
+## Phases
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `ENGAGEMENT` | — | Active engagement target domain |
-| `ENGAGEMENT_BASE` | `~/engagements` | Root directory for all engagement data |
-| `OPERATOR` | `$USER` | Operator name embedded in manifest |
+| Phase | Tools |
+|---|---|
+| `recon` | canvass, trufflehog |
+| `cloud` | cloud-enum, roadtools, s3scanner |
+| `scanning` | nmap, httpx, gowitness |
+| `spray` | teamfiltration |
+| `dns` | dig |
+| `web` | ffuf |
 
 ## Directory convention
 
-repcollect expects this layout under `$ENGAGEMENT_BASE/<target>/`:
+Output is organized by engagement type under `~/engagements/<target>/`:
 
 ```
 ~/engagements/example.com/
-├── recon/        # canvass output
-├── spray/        # TeamFiltration (future)
-├── cloud/        # cloud_enum (future)
-└── ...
+└── ext/
+    ├── recon/
+    ├── cloud/
+    ├── scanning/
+    └── ...
 ```
-
-If the target directory doesn't exist, `rpt` will error. Subdirectories for tools you didn't run are fine — they'll show up as `not found` in output and `missing_tools` in the manifest.
-
-## Adding a new tool detector
-
-Create `collectors/<toolname>.py` with three attributes:
-
-```python
-NAME = "toolname"        # identifier used in the manifest
-SUBDIR = "subdir"        # subdirectory under $ENGAGEMENT_BASE/<target>/
-
-FILES = {
-    "role_name": "exact-file.json",   # exact filename
-    "other_role": "*_glob.txt",        # glob pattern
-}
-
-# optional — return version string or None
-def detect_version(subdir_path: Path) -> str | None:
-    return None
-```
-
-No registration needed. `rpt` auto-discovers all modules in `collectors/`.
-
-See [collectors/canvass.py](collectors/canvass.py) for a full example.
 
 ## Bundle format
 
-Output: `./<target>-<YYYYMMDD>.tar.gz` (or `.zip`) in the current directory.
+Output: `./<target>-<type>-<YYYYMMDD>.tar.gz` in the current directory.
 
-Archive layout:
 ```
-example.com-20260423.tar.gz
-└── example.com-20260423/
+example.com-ext-20260423.tar.gz
+└── example.com-ext-20260423/
     ├── manifest.json
     └── recon/
         ├── aad-raw.json
         └── ...
 ```
 
-`manifest.json` contains engagement metadata, per-tool file inventory, missing tools, and any skipped files (>500 MB).
+## Adding a new collector
+
+Create `collectors/external/<phase>/<toolname>.py`:
+
+```python
+NAME = "toolname"
+SUBDIR = "subdir"   # folder under ~/engagements/<target>/<type>/
+
+FILES = {
+    "role_name": "exact-file.json",
+    "other_role": "*_glob.txt",
+}
+```
+
+See [collectors/external/recon/canvass.py](collectors/external/recon/canvass.py) for a full example.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENGAGEMENT_BASE` | `~/engagements` | Root directory for all engagement data |
+| `OPERATOR` | `$USER` | Operator name embedded in manifest |
 
 ## Relationships
 
-- **repkit** — sets up the `$ENGAGEMENT_BASE/<target>/` directory convention that repcollect reads
-- **reptr** — ingests bundles produced by repcollect; reads `manifest.json` to route files to the right parsers
+- **repkit** (`repkit/`) — installs tools and wrapper scripts, provides `eng` command
+- **reptr** — ingests bundles produced by repcollect
 
 ## Dev
 

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/../lib/engagement.sh"
+
+OUTPUT_DIR=$(ensure_engagement_dir roadtools) || exit 1
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RUN_DIR="$OUTPUT_DIR/run_${TIMESTAMP}"
+mkdir -p "$RUN_DIR"
+
+SUBCMD="${1:-}"
+if [[ -z "$SUBCMD" ]]; then
+    echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2
+    exit 1
+fi
+shift
+
+case "$SUBCMD" in
+    roadrecon)
+        if [[ "${1:-}" == "gather" ]]; then
+            shift
+            ARGS=()
+            skip_next=0
+            for arg in "$@"; do
+                if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+                if [[ "$arg" == "-d" || "$arg" == "--database" ]]; then skip_next=1; continue; fi
+                ARGS+=("$arg")
+            done
+            echo "[repkit] roadrecon output -> $RUN_DIR/roadrecon.db" >&2
+            roadrecon gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
+        else
+            roadrecon "$@"
+        fi
+        ;;
+    roadtx)
+        echo "[repkit] roadtx run dir -> $RUN_DIR" >&2
+        cd "$RUN_DIR"
+        roadtx "$@"
+        ;;
+    *)
+        echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2
+        exit 1
+        ;;
+esac
+exit $?
