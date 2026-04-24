@@ -62,7 +62,7 @@ fi
 
 if ! grep -qF 'HOME/bin' "$HOME/.bashrc" 2>/dev/null; then
     echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc"
-    warn "added ~/bin to PATH in ~/.bashrc — restart your shell or run: source ~/.bashrc"
+    ok "added ~/bin to PATH in ~/.bashrc"
 fi
 
 # ── Step 3: Create directories + Python venv for tools ────────────────────
@@ -87,7 +87,7 @@ VENV_PIP="$PYTOOLS_VENV/bin/pip"
 PYTOOLS_BIN="$PYTOOLS_VENV/bin"
 if ! grep -qF "pytools_venv/bin" "$HOME/.bashrc" 2>/dev/null; then
     echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$HOME/.bashrc"
-    warn "added $PYTOOLS_BIN to PATH in ~/.bashrc — restart your shell or run: source ~/.bashrc"
+    ok "added $PYTOOLS_BIN to PATH in ~/.bashrc"
 fi
 
 # ── Step 4: Install tools from tools.conf ──────────────────────────────────
@@ -201,7 +201,7 @@ install_go() {
         if [[ ":$PATH:" != *":$go_bin:"* ]]; then
             if ! grep -q 'go/bin' "$HOME/.bashrc" 2>/dev/null; then
                 echo 'export PATH="$HOME/go/bin:$PATH"' >> "$HOME/.bashrc"
-                warn "added ~/go/bin to PATH in ~/.bashrc — restart your shell or run: source ~/.bashrc"
+                ok "added ~/go/bin to PATH in ~/.bashrc"
             fi
         fi
     else
@@ -252,7 +252,7 @@ echo "════════════════════════�
 [[ ${#FAILED_TOOLS[@]}    -gt 0 ]] && echo " failed    : ${FAILED_TOOLS[*]}"
 echo ""
 echo " next steps:"
-echo "   1. ensure ~/bin is in \$PATH"
+echo "   1. source ~/.bashrc"
 echo "   2. eng new <target>   — create your first engagement"
 echo "   3. eng use <target>   — set the active engagement"
 echo "   4. rpt run -t ext -p recon   — run your first phase"
