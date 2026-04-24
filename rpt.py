@@ -24,14 +24,24 @@ PHASES = {
     "scanning": ["nmap", "httpx", "gowitness"],
     "dns":      ["dig"],
     "web":      ["ffuf"],
+    # auto: OSINT + probing + scanning pipeline, minimal prompting.
+    # Each tool's input defaults to the previous tool's output where possible.
+    # Excludes auth-gated tools (roadtools, teamfiltration) and source-specific
+    # tools (trufflehog, s3scanner) — those stay manual.
+    "auto":     ["canvass", "nmap", "httpx", "gowitness", "cloud-enum", "ffuf"],
 }
+
+FFUF_DEFAULT_WORDLISTS = [
+    "/usr/share/seclists/Discovery/Web-Content/common.txt",
+    "/usr/share/wordlists/dirb/common.txt",
+]
 
 TOOL_PROMPTS = {
     "canvass":        [("domain (e.g. example.com)", "domain")],
     "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp)", "keywords")],
     "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
     "s3scanner":      [("bucket names file path (or single keyword)", "input")],
-    "nmap":           [("target (IP, CIDR, or hostname)", "target"),
+    "nmap":           [("target (IP/CIDR/hostname, or path to scope file)", "target"),
                        ("scan type (quick/full/udp/service)", "scan_type")],
     "httpx":          [("input: file path or single host", "input")],
     "gowitness":      [("input: file path or single URL", "input")],
@@ -88,6 +98,20 @@ TOOL_SUBDIRS = [
     "nmap", "httpx", "gowitness", "spray", "dns", "ffuf",
 ]
 
+TOOL_SUBDIR_MAP = {
+    "canvass":        "recon",
+    "trufflehog":     "trufflehog",
+    "cloud-enum":     "cloud",
+    "roadtools":      "roadtools",
+    "s3scanner":      "s3scanner",
+    "nmap":           "nmap",
+    "httpx":          "httpx",
+    "gowitness":      "gowitness",
+    "teamfiltration": "spray",
+    "dig":            "dns",
+    "ffuf":           "ffuf",
+}
+
 
 def read_engagement_file() -> str | None:
     if ENGAGEMENT_FILE.exists():
@@ -99,6 +123,60 @@ def read_engagement_file() -> str | None:
 def write_engagement_file(target: str) -> None:
     ENGAGEMENT_FILE.write_text(target + "\n")
     ENGAGEMENT_FILE.chmod(0o600)
+
+
+def prompt_default(tool: str, key: str, target: str, etype: str = "ext") -> str | None:
+    """Return a pre-filled default for a given tool prompt, if one applies.
+
+    Chains tool outputs together:
+      - httpx input     → newest <recon>/*_subdomains.txt (from canvass), else scope.txt
+      - gowitness input → newest <httpx>/*_urls.txt, else scope.txt
+      - nmap target     → scope.txt if present
+      - nmap scan_type  → "quick"
+      - dig record_type → "A"
+      - ffuf url        → https://<target>/FUZZ
+      - ffuf wordlist   → first of FFUF_DEFAULT_WORDLISTS that exists
+    """
+    base = get_engagement_base() / target
+    scope = base / "scope.txt"
+    has_scope = scope.is_file() and scope.stat().st_size > 0
+
+    def _newest(glob_path: Path, pattern: str) -> Path | None:
+        if not glob_path.is_dir():
+            return None
+        matches = sorted(glob_path.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        return matches[0] if matches else None
+
+    if tool == "nmap" and key == "target" and has_scope:
+        return str(scope)
+    if tool == "nmap" and key == "scan_type":
+        return "quick"
+    if tool == "dig" and key == "record_type":
+        return "A"
+
+    if tool == "httpx" and key == "input":
+        subs = _newest(base / etype / "recon", "*_subdomains.txt")
+        if subs:
+            return str(subs)
+        if has_scope:
+            return str(scope)
+
+    if tool == "gowitness" and key == "input":
+        urls = _newest(base / etype / "httpx", "*_urls.txt")
+        if urls:
+            return str(urls)
+        if has_scope:
+            return str(scope)
+
+    if tool == "ffuf":
+        if key == "url":
+            return f"https://{target}/FUZZ"
+        if key == "wordlist":
+            for candidate in FFUF_DEFAULT_WORDLISTS:
+                if Path(candidate).is_file():
+                    return candidate
+
+    return None
 
 
 def validate_target(target: str) -> None:
@@ -249,6 +327,187 @@ def build_manifest(target: str, date_stamp: str, etype: str,
     }
 
 
+def build_summary(target: str, etype: str, date_stamp: str,
+                  detections: list[DetectionResult], eng_root: Path) -> str:
+    """Markdown summary of a bundle — signal only, not full output.
+
+    Designed to be short enough for an LLM context window. Per-tool extractors
+    are defensive: any parse failure is silently swallowed and the tool just
+    shows its file count.
+    """
+    import json
+
+    lines: list[str] = []
+    lines.append(f"# engagement summary: {target}")
+    lines.append("")
+    lines.append(f"- type: `{etype}`")
+    lines.append(f"- bundle date: `{date_stamp}`")
+
+    scope = eng_root / "scope.txt"
+    if scope.is_file():
+        scope_targets = [
+            l.strip() for l in scope.read_text().splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        lines.append(f"- scope entries: {len(scope_targets)}")
+    lines.append("")
+
+    # Per-tool signal extraction.
+    type_dir = eng_root / etype
+    ran = [d for d in detections if d.found]
+    if not ran:
+        lines.append("_no tool output in this bundle._")
+        return "\n".join(lines) + "\n"
+
+    lines.append("## tools")
+    lines.append("")
+    for d in ran:
+        subdir = type_dir / d.subdir
+        extracted = _extract_tool_signal(d.tool_name, subdir)
+        version = f" v{d.version}" if d.version else ""
+        lines.append(f"### {d.tool_name}{version}  — {len(d.files)} file(s)")
+        if extracted:
+            lines.append("")
+            lines.extend(extracted)
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
+    """Return a short list of markdown bullets with key findings for a tool.
+    Any parse error returns an empty list."""
+    import json
+    import re
+
+    out: list[str] = []
+    try:
+        if tool == "canvass":
+            for sub in subdir.glob("*_subdomains.txt"):
+                count = sum(1 for _ in sub.open() if _.strip())
+                out.append(f"- subdomains discovered: **{count}**")
+                break
+            for brief in subdir.glob("*_summary.txt"):
+                head = brief.read_text(errors="replace").strip().splitlines()[:20]
+                out.append("- top recommendations (from `*_summary.txt`):")
+                out.extend(f"  > {l}" for l in head if l.strip())
+                break
+
+        elif tool == "nmap":
+            for gnmap in subdir.glob("*.gnmap"):
+                hosts = 0
+                open_ports: dict[str, list[str]] = {}
+                for line in gnmap.read_text(errors="replace").splitlines():
+                    m = re.match(r"Host: (\S+) .* Ports: (.+?)\tIgnored", line)
+                    if not m:
+                        continue
+                    host, ports_raw = m.group(1), m.group(2)
+                    ports = [p.split("/", 1)[0] for p in ports_raw.split(", ") if "/open/" in p]
+                    if ports:
+                        hosts += 1
+                        open_ports[host] = ports
+                out.append(f"- hosts with open ports: **{hosts}**")
+                for host, ports in list(open_ports.items())[:10]:
+                    out.append(f"  - `{host}`: {', '.join(ports)}")
+                if len(open_ports) > 10:
+                    out.append(f"  - …and {len(open_ports)-10} more")
+                break
+
+        elif tool == "httpx":
+            for j in subdir.glob("httpx_*.json"):
+                urls: list[tuple[str, int]] = []
+                for line in j.open():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    u, s = obj.get("url"), obj.get("status_code") or obj.get("status-code")
+                    if u:
+                        urls.append((u, s or 0))
+                out.append(f"- live URLs: **{len(urls)}**")
+                for u, s in urls[:15]:
+                    out.append(f"  - `{u}` → {s}")
+                if len(urls) > 15:
+                    out.append(f"  - …and {len(urls)-15} more")
+                break
+
+        elif tool == "gowitness":
+            screenshots = list((subdir / "screenshots").glob("*.png")) if (subdir / "screenshots").is_dir() else []
+            out.append(f"- screenshots captured: **{len(screenshots)}**")
+
+        elif tool == "dig":
+            for t in subdir.glob("dig_*.txt"):
+                answers = [
+                    l for l in t.read_text(errors="replace").splitlines()
+                    if l and not l.startswith(";") and "\t" in l
+                ]
+                if answers:
+                    out.append(f"- ANSWER records in `{t.name}`: {len(answers)}")
+                break
+
+        elif tool == "trufflehog":
+            for t in subdir.glob("trufflehog_*.json"):
+                verified = unverified = 0
+                for line in t.open():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    if obj.get("Verified"):
+                        verified += 1
+                    elif "DetectorName" in obj:
+                        unverified += 1
+                out.append(f"- secrets — verified: **{verified}**, unverified: **{unverified}**")
+                break
+
+        elif tool == "cloud_enum":
+            for t in subdir.glob("cloud_enum_*.txt"):
+                hits = [l.strip() for l in t.read_text(errors="replace").splitlines() if "OPEN" in l or "ACCESS" in l]
+                out.append(f"- cloud resources of note: **{len(hits)}**")
+                for h in hits[:10]:
+                    out.append(f"  - {h}")
+                if len(hits) > 10:
+                    out.append(f"  - …and {len(hits)-10} more")
+                break
+
+        elif tool == "s3scanner":
+            for t in subdir.glob("s3scanner_*.json"):
+                hits = 0
+                for line in t.open():
+                    try:
+                        obj = json.loads(line.strip())
+                    except ValueError:
+                        continue
+                    if obj.get("bucket_exists"):
+                        hits += 1
+                out.append(f"- buckets confirmed to exist: **{hits}**")
+                break
+
+        elif tool == "ffuf":
+            for t in subdir.glob("ffuf_*.json"):
+                try:
+                    obj = json.loads(t.read_text())
+                except ValueError:
+                    continue
+                results = obj.get("results", [])
+                out.append(f"- paths found: **{len(results)}**")
+                for r in results[:10]:
+                    out.append(f"  - `{r.get('url')}` → {r.get('status')}")
+                if len(results) > 10:
+                    out.append(f"  - …and {len(results)-10} more")
+                break
+
+    except (OSError, ValueError):
+        return []
+    return out
+
+
 def create_bundle(target: str, date_stamp: str, etype: str,
                   detections: list[DetectionResult],
                   manifest: dict, fmt: str) -> Path:
@@ -274,6 +533,17 @@ def create_bundle(target: str, date_stamp: str, etype: str,
         (staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
+
+        # Include engagement-level context so the bundle is self-describing.
+        eng_root = get_engagement_base() / target
+        for name in ("scope.txt", "notes.md"):
+            src = eng_root / name
+            if src.is_file():
+                shutil.copy2(src, staging / name)
+
+        # Generate an LLM-friendly summary with signal extracted from each tool.
+        summary = build_summary(target, etype, date_stamp, detections, eng_root)
+        (staging / "summary.md").write_text(summary, encoding="utf-8")
 
         seen_dests: set[str] = set()
         for df in all_files:
@@ -312,7 +582,8 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
         return ["-bucket", inp]
     elif tool == "nmap":
         preset = NMAP_PRESETS.get(prompted["scan_type"], NMAP_PRESETS["quick"])
-        return preset + [prompted["target"]]
+        tgt = prompted["target"]
+        return preset + (["-iL", tgt] if Path(tgt).is_file() else [tgt])
     elif tool == "httpx":
         inp = prompted["input"]
         return ["-l", inp] if Path(inp).exists() else ["-u", inp]
@@ -325,6 +596,66 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     elif tool == "ffuf":
         return ["-u", prompted["url"], "-w", prompted["wordlist"]]
     return []
+
+
+def scope_path_for(target: str) -> Path:
+    return get_engagement_base() / target / "scope.txt"
+
+
+def notes_path_for(target: str) -> Path:
+    return get_engagement_base() / target / "notes.md"
+
+
+def _open_in_editor(path: Path, template: str) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(template)
+
+    editor = os.environ.get("EDITOR")
+    for candidate in [editor, "nano", "vi"]:
+        if candidate and subprocess.run(["which", candidate], capture_output=True).returncode == 0:
+            subprocess.run([candidate, str(path)])
+            print(f"[+] saved: {path}")
+            return 0
+
+    print(f"error: no editor found (tried $EDITOR, nano, vi). edit manually: {path}", file=sys.stderr)
+    return 1
+
+
+def cmd_notes(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt new <target>' or 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+
+    template = (
+        f"# notes for engagement: {target}\n\n"
+        "## objectives\n\n"
+        "- \n\n"
+        "## out-of-scope\n\n"
+        "- \n\n"
+        "## findings / leads\n\n"
+        "- \n"
+    )
+    return _open_in_editor(notes_path_for(target), template)
+
+
+def cmd_scope(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt new <target>' or 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+
+    template = (
+        f"# scope for engagement: {target}\n"
+        "# one target per line — IPs, CIDRs, hostnames all work\n"
+        "# lines starting with '#' are ignored by most tools\n"
+        "# example:\n"
+        "# 192.0.2.10\n"
+        "# 198.51.100.0/24\n"
+        "# host.example.com\n"
+    )
+    return _open_in_editor(scope_path_for(target), template)
 
 
 def cmd_new(args) -> int:
@@ -401,6 +732,35 @@ def cmd_list(args) -> int:
     return 0
 
 
+def tool_has_output(tool: str, target: str, etype: str) -> bool:
+    """True if the tool's engagement subdir has any non-hidden output file."""
+    subdir = TOOL_SUBDIR_MAP.get(tool)
+    if not subdir:
+        return False
+    path = get_engagement_base() / target / etype / subdir
+    if not path.is_dir():
+        return False
+    return any(p.is_file() and not p.name.startswith(".") for p in path.rglob("*"))
+
+
+def show_phase_status(phase: str, tools: list[str], target: str, etype: str) -> None:
+    """Print a [x]/[ ] checklist of which tools in the phase have produced output."""
+    done = [t for t in tools if tool_has_output(t, target, etype)]
+    todo = [t for t in tools if t not in done]
+
+    print(f"\n{phase} phase status:")
+    for t in tools:
+        mark = "[x]" if t in done else "[ ]"
+        print(f"  {mark} {t}")
+
+    print()
+    if not todo:
+        print("all tools in this phase have output.")
+    else:
+        print(f"{len(todo)}/{len(tools)} still need to run: {', '.join(todo)}")
+        print("run the tools manually, or use `rpt run -p auto` for the full chain.")
+
+
 def cmd_run(args) -> int:
     etype = args.etype
     phase = args.phase
@@ -420,7 +780,14 @@ def cmd_run(args) -> int:
     tools = PHASES[phase]
     print(f"rpt run — {etype} / {phase}")
     print(f"target:  {target}")
-    print(f"output:  ~/engagements/{target}/{etype}/\n")
+    print(f"output:  ~/engagements/{target}/{etype}/")
+
+    # Non-auto phases are status-only — never execute anything.
+    # Only `-p auto` actually runs tools.
+    if phase != "auto":
+        show_phase_status(phase, tools, target, etype)
+        return 0
+    print()
 
     succeeded = []
     failed = []
@@ -430,17 +797,29 @@ def cmd_run(args) -> int:
     for i, tool in enumerate(tools, 1):
         print(f"[{i}/{len(tools)}] {tool}")
 
+        # Resume behavior: skip tools that already have output in this engagement.
+        # Delete the subdir (or pass --force later) to re-run.
+        if tool_has_output(tool, target, etype):
+            print(f"  ✓ already has output — skipping (delete {TOOL_SUBDIR_MAP[tool]}/ to re-run)")
+            succeeded.append(tool)
+            continue
+
         prompted = {}
         for prompt_text, key in TOOL_PROMPTS.get(tool, []):
+            default = prompt_default(tool, key, target, etype)
+            suffix = f" [{default}]" if default else ""
             try:
-                value = input(f"  {prompt_text}: ").strip()
+                value = input(f"  {prompt_text}{suffix}: ").strip()
             except (KeyboardInterrupt, EOFError):
                 print("\naborted.", file=sys.stderr)
                 return 1
             if not value:
-                print(f"  skipping {tool} (no input provided)")
-                prompted = None
-                break
+                if default:
+                    value = default
+                else:
+                    print(f"  skipping {tool} (no input provided)")
+                    prompted = None
+                    break
             prompted[key] = value
 
         if prompted is None:
@@ -568,6 +947,8 @@ def main() -> int:
 
     subparsers.add_parser("current", help="print the active engagement")
     subparsers.add_parser("list", help="list all engagements")
+    subparsers.add_parser("scope", help="edit scope.txt for the active engagement ($EDITOR / nano / vi)")
+    subparsers.add_parser("notes", help="edit notes.md for the active engagement")
 
     run_p = subparsers.add_parser("run", help="run tools for a phase")
     run_p.add_argument("-t", required=True, dest="etype", metavar="TYPE",
@@ -592,6 +973,8 @@ def main() -> int:
         "use": cmd_use,
         "current": cmd_current,
         "list": cmd_list,
+        "scope": cmd_scope,
+        "notes": cmd_notes,
         "run": cmd_run,
         "collect": cmd_collect,
     }

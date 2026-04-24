@@ -6,6 +6,7 @@ source "$SCRIPT_DIR/../lib/engagement.sh"
 OUTPUT_DIR=$(ensure_engagement_dir httpx) || exit 1
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTFILE="$OUTPUT_DIR/httpx_${TIMESTAMP}.json"
+URLFILE="$OUTPUT_DIR/httpx_${TIMESTAMP}_urls.txt"
 
 ARGS=()
 skip_next=0
@@ -16,5 +17,26 @@ for arg in "$@"; do
 done
 
 echo "[repkit] httpx output -> $OUTFILE" >&2
+echo "[repkit] httpx url list -> $URLFILE" >&2
 "$HOME/go/bin/httpx" -json -o "$OUTFILE" "${ARGS[@]}"
-exit $?
+rc=$?
+
+# Extract plain URL list for chaining into gowitness/etc.
+if [[ -s "$OUTFILE" ]]; then
+    python3 -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        continue
+    url = obj.get("url")
+    if url:
+        print(url)
+' < "$OUTFILE" > "$URLFILE" || true
+fi
+
+exit $rc
