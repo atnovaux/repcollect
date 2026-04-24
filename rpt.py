@@ -27,7 +27,7 @@ PHASES = {
 }
 
 TOOL_PROMPTS = {
-    "canvass":        [],
+    "canvass":        [("domain (e.g. acme.com)", "domain")],
     "trufflehog":     [("source type (git/filesystem/s3)", "source_type"),
                        ("source target (repo URL or path)", "source_target")],
     "cloud-enum":     [("keywords, comma-separated (e.g. acme,acmecorp)", "keywords")],
@@ -306,7 +306,7 @@ def create_bundle(target: str, date_stamp: str, etype: str,
 
 def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     if tool == "canvass":
-        return [target]
+        return [prompted["domain"]]
     elif tool == "trufflehog":
         return [prompted["source_type"], prompted["source_target"]]
     elif tool == "cloud-enum":

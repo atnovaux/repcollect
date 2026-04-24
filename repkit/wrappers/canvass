@@ -9,7 +9,7 @@ ARGS=()
 skip_next=0
 for arg in "$@"; do
     if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "--output" || "$arg" == "-o" ]]; then skip_next=1; continue; fi
+    if [[ "$arg" == "--output-dir" ]]; then skip_next=1; continue; fi
     ARGS+=("$arg")
 done
 
@@ -22,4 +22,4 @@ if [[ ! -f "$CANVASS_SCRIPT" ]]; then
 fi
 
 echo "[repkit] canvass output -> $OUTPUT_DIR/" >&2
-exec "$VENV_PYTHON" "$CANVASS_SCRIPT" --output "$OUTPUT_DIR/" "${ARGS[@]}"
+exec "$VENV_PYTHON" "$CANVASS_SCRIPT" --output-dir "$OUTPUT_DIR/" "${ARGS[@]}"
