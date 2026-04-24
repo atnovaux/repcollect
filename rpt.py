@@ -19,7 +19,7 @@ WARN_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 VALID_TYPES = ["ext"]
 
 PHASES = {
-    "recon":    ["canvass", "trufflehog"],
+    "recon":    ["canvass"],
     "cloud":    ["cloud-enum", "roadtools", "s3scanner"],
     "scanning": ["nmap", "httpx", "gowitness"],
     "dns":      ["dig"],
@@ -28,8 +28,6 @@ PHASES = {
 
 TOOL_PROMPTS = {
     "canvass":        [("domain (e.g. acme.com)", "domain")],
-    "trufflehog":     [("source type (git/filesystem/s3)", "source_type"),
-                       ("source target (repo URL or path)", "source_target")],
     "cloud-enum":     [("keywords, comma-separated (e.g. acme,acmecorp)", "keywords")],
     "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
     "s3scanner":      [("bucket names file path (or single keyword)", "input")],
@@ -307,8 +305,6 @@ def create_bundle(target: str, date_stamp: str, etype: str,
 def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     if tool == "canvass":
         return [prompted["domain"]]
-    elif tool == "trufflehog":
-        return [prompted["source_type"], prompted["source_target"]]
     elif tool == "cloud-enum":
         return ["-k", prompted["keywords"]]
     elif tool == "roadtools":

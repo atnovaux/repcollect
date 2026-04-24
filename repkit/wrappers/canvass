@@ -22,4 +22,7 @@ if [[ ! -f "$CANVASS_SCRIPT" ]]; then
 fi
 
 echo "[repkit] canvass output -> $OUTPUT_DIR/" >&2
+echo "[repkit] clearing BBOT scan cache (~/.bbot/scans/)" >&2
+rm -rf "$HOME/.bbot/scans" 2>/dev/null || true
+
 exec "$VENV_PYTHON" "$CANVASS_SCRIPT" --output-dir "$OUTPUT_DIR/" "${ARGS[@]}"

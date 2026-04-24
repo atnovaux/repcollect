@@ -21,12 +21,9 @@ ensure_engagement_dir() {
     local target
     target=$(get_active_engagement) || return 1
 
-    local output_dir
-    if [[ -n "${ENGAGEMENT_TYPE:-}" ]]; then
-        output_dir="$HOME/engagements/$target/$ENGAGEMENT_TYPE/$tool_subdir"
-    else
-        output_dir="$HOME/engagements/$target/$tool_subdir"
-    fi
+    # Default engagement type to ext if not set (rpt run overrides this).
+    local etype="${ENGAGEMENT_TYPE:-ext}"
+    local output_dir="$HOME/engagements/$target/$etype/$tool_subdir"
 
     if [[ ! -d "$output_dir" ]]; then
         mkdir -p "$output_dir" || {
