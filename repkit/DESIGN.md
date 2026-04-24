@@ -118,7 +118,7 @@ After `install.sh` runs, the operator's home directory has:
 
 ### 4.1 The `~/.engagement` File
 
-The active engagement is a single line of text in `~/.engagement`. The file contains only the target domain string (e.g., `acme.com`) with no trailing whitespace or newline beyond what echo writes. There is no JSON, no YAML, no additional metadata.
+The active engagement is a single line of text in `~/.engagement`. The file contains only the target domain string (e.g., `example.com`) with no trailing whitespace or newline beyond what echo writes. There is no JSON, no YAML, no additional metadata.
 
 **Location:** `$HOME/.engagement`  
 **Format:** A single line containing the target name as passed to `rpt new` or `rpt use`. The target name is also the directory name under `~/engagements/`.  
@@ -133,7 +133,7 @@ Target names must be filesystem-safe directory names. The `rpt new` and `rpt use
 - No leading or trailing whitespace
 - No path separators (`/`)
 - No null bytes
-- Recommended convention: lowercase domain name (e.g., `acme.com`, `internal.corp`)
+- Recommended convention: lowercase domain name (e.g., `example.com`, `internal.corp`)
 
 ### 4.3 `ENGAGEMENT_TYPE` Environment Variable
 

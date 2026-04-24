@@ -262,7 +262,22 @@ for wrapper in "$REPKIT_DIR/wrappers/"*; do
     ok "~/bin/$(basename "$wrapper") -> $wrapper"
 done
 
-# ── Step 6: Summary ─────────────────────────────────────────────────────────
+# ── Step 6: Force ~/bin first in PATH ──────────────────────────────────────
+# Repkit wrappers in ~/bin MUST take priority over real binaries in ~/go/bin
+# and ~/tools/pytools_venv/bin. Add this line last so it's prepended last to
+# PATH, which makes it the first entry when .zshrc is sourced.
+
+REPKIT_PATH_MARKER='# repkit: ensure ~/bin wins over ~/go/bin and venv'
+if ! grep -qF "$REPKIT_PATH_MARKER" "$ZSHRC" 2>/dev/null; then
+    {
+        echo ""
+        echo "$REPKIT_PATH_MARKER"
+        echo 'export PATH="$HOME/bin:$PATH"'
+    } >> "$ZSHRC"
+    ok "pinned ~/bin to front of PATH in ~/.zshrc"
+fi
+
+# ── Step 7: Summary ─────────────────────────────────────────────────────────
 
 echo ""
 echo "══════════════════════════════════════════════"

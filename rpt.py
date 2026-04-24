@@ -27,8 +27,8 @@ PHASES = {
 }
 
 TOOL_PROMPTS = {
-    "canvass":        [("domain (e.g. acme.com)", "domain")],
-    "cloud-enum":     [("keywords, comma-separated (e.g. acme,acmecorp)", "keywords")],
+    "canvass":        [("domain (e.g. example.com)", "domain")],
+    "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp)", "keywords")],
     "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
     "s3scanner":      [("bucket names file path (or single keyword)", "input")],
     "nmap":           [("target (IP, CIDR, or hostname)", "target"),
@@ -262,12 +262,8 @@ def create_bundle(target: str, date_stamp: str, etype: str,
     output_path = Path(f"./{bundle_name}.{fmt}")
 
     if output_path.exists():
-        print(
-            f"error: output file already exists: {output_path}\n"
-            "hint: delete it or rename it before re-running.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        print(f"[+] overwriting existing bundle: {output_path}")
+        output_path.unlink()
 
     all_files = [f for d in detections if d.found for f in d.files]
 
@@ -565,7 +561,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command")
 
     new_p = subparsers.add_parser("new", help="create a new engagement and set it active")
-    new_p.add_argument("target", help="target name (e.g. acmecorp)")
+    new_p.add_argument("target", help="target name (e.g. examplecorp)")
 
     use_p = subparsers.add_parser("use", help="switch to an existing engagement")
     use_p.add_argument("target", help="target name")

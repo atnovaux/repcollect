@@ -105,15 +105,17 @@ def test_oversized_file_skipped(tmp_path, monkeypatch):
     assert any("aad-raw.json" in s.path for s in skipped)
 
 
-def test_output_exists_exits(tmp_path, monkeypatch):
+def test_output_exists_overwrites(tmp_path, monkeypatch):
     base = make_engagement(tmp_path)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "example.com-ext-20260423.tar.gz").write_text("old")
+    stale = tmp_path / "example.com-ext-20260423.tar.gz"
+    stale.write_text("old")
+    stale_size = stale.stat().st_size
     detections, skipped = rpt.scan_for_tools(base / "example.com", "ext")
     manifest = rpt.build_manifest("example.com", "20260423", "ext", detections, skipped)
-    with pytest.raises(SystemExit) as exc:
-        rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "tar.gz")
-    assert exc.value.code == 1
+    output = rpt.create_bundle("example.com", "20260423", "ext", detections, manifest, "tar.gz")
+    assert output.exists()
+    assert output.stat().st_size != stale_size
 
 
 def test_bundle_file_permissions(tmp_path, monkeypatch):
