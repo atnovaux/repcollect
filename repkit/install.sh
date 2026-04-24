@@ -65,13 +65,30 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     warn "add this to your ~/.bashrc:  export PATH=\"\$HOME/bin:\$PATH\""
 fi
 
-# ── Step 3: Create directories ─────────────────────────────────────────────
+# ── Step 3: Create directories + Python venv for tools ────────────────────
 
 echo "creating directories..."
 mkdir -p "$BIN_DIR"
 mkdir -p "$HOME/engagements"
 mkdir -p "$TOOLS_DIR"
 ok "~/bin, ~/engagements, ~/tools ready"
+
+PYTOOLS_VENV="$TOOLS_DIR/pytools_venv"
+if [[ ! -d "$PYTOOLS_VENV" ]]; then
+    echo "creating Python venv for tools..."
+    python3 -m venv "$PYTOOLS_VENV"
+    ok "tools venv created at $PYTOOLS_VENV"
+else
+    ok "tools venv already exists"
+fi
+VENV_PIP="$PYTOOLS_VENV/bin/pip"
+"$VENV_PIP" install --upgrade pip -q
+
+PYTOOLS_BIN="$PYTOOLS_VENV/bin"
+if ! grep -qF "pytools_venv/bin" "$HOME/.bashrc" 2>/dev/null; then
+    echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$HOME/.bashrc"
+    warn "added $PYTOOLS_BIN to PATH in ~/.bashrc — restart your shell or run: source ~/.bashrc"
+fi
 
 # ── Step 4: Install tools from tools.conf ──────────────────────────────────
 
@@ -83,7 +100,7 @@ install_apt() {
         skip "$pkg (already installed)"
         SKIPPED_TOOLS+=("$pkg")
     else
-        if sudo apt install -y "$pkg" &>/dev/null; then
+        if sudo apt install -y "$pkg"; then
             ok "$pkg"
             INSTALLED_TOOLS+=("$pkg")
         else
@@ -100,7 +117,7 @@ install_git() {
     local dest="$TOOLS_DIR/$repo_name"
 
     if [[ -d "$dest" ]]; then
-        if git -C "$dest" pull --ff-only &>/dev/null; then
+        if git -C "$dest" pull --ff-only; then
             skip "$repo_name (already cloned, pulled latest)"
             SKIPPED_TOOLS+=("$repo_name")
         else
@@ -109,7 +126,7 @@ install_git() {
             return
         fi
     else
-        if ! git clone "$url" "$dest" &>/dev/null; then
+        if ! git clone "$url" "$dest"; then
             err "failed to clone $url"
             FAILED_TOOLS+=("$repo_name")
             return
@@ -121,7 +138,7 @@ install_git() {
             warn "$repo_name: go not found, skipping build"
         else
             echo "    building $repo_name (go install)..."
-            if (cd "$dest" && go install ./...) &>/dev/null; then
+            if (cd "$dest" && go install ./...); then
                 ok "$repo_name (built)"
             else
                 err "$repo_name: go install failed"
@@ -129,12 +146,12 @@ install_git() {
                 return
             fi
         fi
-    elif [[ -f "$dest/requirements.txt" ]]; then
-        pip3 install -r "$dest/requirements.txt" &>/dev/null || warn "$repo_name: pip requirements install failed"
     elif [[ -f "$dest/setup.py" ]] || [[ -f "$dest/pyproject.toml" ]]; then
-        pip3 install -e "$dest" &>/dev/null || warn "$repo_name: pip install -e failed"
+        "$VENV_PIP" install -e "$dest" || warn "$repo_name: pip install -e failed"
+    elif [[ -f "$dest/requirements.txt" ]]; then
+        "$VENV_PIP" install -r "$dest/requirements.txt" || warn "$repo_name: pip requirements install failed"
     elif [[ -f "$dest/Makefile" ]]; then
-        make -C "$dest" &>/dev/null || warn "$repo_name: make failed"
+        make -C "$dest" || warn "$repo_name: make failed"
     fi
 
     if [[ "$repo_name" == "TeamFiltration" ]] && [[ $HAS_DOTNET -eq 1 ]]; then
@@ -158,7 +175,7 @@ install_git() {
 
 install_pip() {
     local pkg="$1"
-    if pip3 install --upgrade "$pkg" &>/dev/null; then
+    if "$VENV_PIP" install --upgrade "$pkg"; then
         ok "$pkg"
         INSTALLED_TOOLS+=("$pkg")
     else
@@ -175,7 +192,7 @@ install_go() {
         return
     fi
 
-    if go install "${module}@latest" &>/dev/null; then
+    if go install "${module}@latest"; then
         ok "$module"
         INSTALLED_TOOLS+=("$module")
 

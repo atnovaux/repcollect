@@ -13,6 +13,12 @@ if [[ ! -f "$CLOUD_ENUM" ]]; then
     exit 1
 fi
 
+VENV_PYTHON="$HOME/tools/pytools_venv/bin/python3"
+if [[ ! -f "$VENV_PYTHON" ]]; then
+    echo "error: pytools_venv not found. run install.sh." >&2
+    exit 1
+fi
+
 ARGS=()
 skip_next=0
 for arg in "$@"; do
@@ -22,5 +28,5 @@ for arg in "$@"; do
 done
 
 echo "[repkit] cloud-enum output -> $OUTFILE" >&2
-python3 "$CLOUD_ENUM" -l "$OUTFILE" "${ARGS[@]}"
+"$VENV_PYTHON" "$CLOUD_ENUM" -l "$OUTFILE" "${ARGS[@]}"
 exit $?
