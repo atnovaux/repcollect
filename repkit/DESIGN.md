@@ -169,7 +169,7 @@ The script executes the following steps in order:
 
 - Verify the shell is bash (fail if `$BASH_VERSION` is unset).
 - Verify the script is not being run as root directly (fail if `$EUID -eq 0`). Print a message telling the operator to run as their user account.
-- Verify `~/bin` is in `$PATH`. If it is not, print a warning and instructions for adding it (e.g., `export PATH="$HOME/bin:$PATH"` in `~/.bashrc`). Do not fail; continue.
+- Verify `~/bin` is in `$PATH`. If it is not, print a warning and instructions for adding it (e.g., `export PATH="$HOME/bin:$PATH"` in `~/.zshrc`). Do not fail; continue.
 
 **Step 2: Verify system dependencies**
 
@@ -258,7 +258,7 @@ Using `--upgrade` is idempotent.
 go install <module-path>@latest
 ```
 
-Requires `go` in PATH. If `go` is not available, skip and print an error. The installed binary ends up in `$GOPATH/bin` or `$HOME/go/bin`. install.sh adds `$HOME/go/bin` to PATH in `~/.bashrc` if it is not already present.
+Requires `go` in PATH. If `go` is not available, skip and print an error. The installed binary ends up in `$GOPATH/bin` or `$HOME/go/bin`. install.sh adds `$HOME/go/bin` to PATH in `~/.zshrc` if it is not already present.
 
 **`manual:<description>`**
 

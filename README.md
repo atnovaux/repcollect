@@ -2,77 +2,99 @@
 
 Collects red team tool outputs from an engagement box and bundles them into a single transferable artifact for ingestion by reptr.
 
+Two components in one repo:
+- **rpt** — the CLI on the operator box (engagement management, phase orchestration, bundle creation)
+- **repkit** (`repkit/`) — Kali setup: installs tools and wraps each one so output is forced into the engagement directory
+
 ## Install
 
 ```bash
 git clone <repo>
 cd repcollect
 ./install.sh
-source ~/.bashrc
+source ~/.zshrc
 ```
 
-Requires Python 3.10+. No other dependencies.
+Requires Python 3.10+. Kali Linux. Runs as root.
 
-## Usage
+## Workflow
+
+**One engagement per target.** Every new target gets its own engagement — no stale data ever mixes between targets.
 
 ```bash
-# create and activate an engagement
+# start a new engagement
 rpt new example.com
-rpt use example.com       # switch to an existing engagement
-rpt current               # print active engagement
-rpt list                  # list all engagements
+rpt use example.com
 
-# run tools for a phase
+# run phases (wrappers auto-deposit under ~/engagements/example.com/ext/<tool>/)
 rpt run -t ext -p recon
 rpt run -t ext -p cloud
 rpt run -t ext -p scanning
+rpt run -t ext -p dns
+rpt run -t ext -p web
 
-# bundle everything into an archive
+# run tools manually when they need specific input (no auto-prompting)
+trufflehog github --org=<target-org>
+trufflehog filesystem /path/to/checkout
+teamfiltration --enum --tenant-info --domain example.com
+
+# bundle for handoff to reptr
 rpt collect -t ext
+# produces ./example.com-ext-<YYYYMMDD>.tar.gz
+```
 
-# explicit target override
-rpt collect -t ext -T example.com
-
-# zip instead of tar.gz
-rpt collect -t ext --format zip
+Switching between engagements:
+```bash
+rpt list                  # see all engagements (* marks active)
+rpt use <other-target>    # switch active
+rpt current               # print active
 ```
 
 ## Phases
 
-| Phase | Tools |
+| Phase | Tools (auto-run by `rpt run`) |
 |---|---|
-| `recon` | canvass, trufflehog |
+| `recon` | canvass |
 | `cloud` | cloud-enum, roadtools, s3scanner |
 | `scanning` | nmap, httpx, gowitness |
-| `spray` | teamfiltration |
 | `dns` | dig |
 | `web` | ffuf |
 
-## Directory convention
+**Not in any phase** (run manually — they need specific input):
+- `trufflehog` — needs a source (git repo / filesystem / s3 bucket)
+- `teamfiltration` — auth attacks; too dangerous to mass-run
 
-Output is organized by engagement type under `~/engagements/<target>/`:
+## Directory layout
 
 ```
 ~/engagements/example.com/
 └── ext/
-    ├── recon/
-    ├── cloud/
-    ├── scanning/
-    └── ...
+    ├── recon/        (canvass output)
+    ├── cloud/        (cloud-enum)
+    ├── roadtools/
+    ├── s3scanner/
+    ├── nmap/
+    ├── httpx/
+    ├── gowitness/
+    ├── trufflehog/
+    ├── spray/        (teamfiltration)
+    ├── dns/          (dig)
+    └── ffuf/
 ```
+
+Wrappers default to `ENGAGEMENT_TYPE=ext` — no env var needed.
 
 ## Bundle format
 
-Output: `./<target>-<type>-<YYYYMMDD>.tar.gz` in the current directory.
-
 ```
-example.com-ext-20260423.tar.gz
-└── example.com-ext-20260423/
+example.com-ext-20260424.tar.gz
+└── example.com-ext-20260424/
     ├── manifest.json
-    └── recon/
-        ├── aad-raw.json
-        └── ...
+    └── <tool-subdir>/
+        └── <tool output files>
 ```
+
+Re-running `rpt collect` overwrites the existing same-day bundle.
 
 ## Adding a new collector
 
@@ -96,15 +118,18 @@ See [collectors/external/recon/canvass.py](collectors/external/recon/canvass.py)
 |---|---|---|
 | `ENGAGEMENT_BASE` | `~/engagements` | Root directory for all engagement data |
 | `OPERATOR` | `$USER` | Operator name embedded in manifest |
-
-## Relationships
-
-- **repkit** (`repkit/`) — installs tools and wrapper scripts used by `rpt run`
-- **reptr** — ingests bundles produced by repcollect
+| `ENGAGEMENT_TYPE` | `ext` | Output subtree under the target; `rpt run` sets this automatically |
 
 ## Dev
 
 ```bash
 pip install -e ".[dev]"
 python -m pytest tests/
+```
+
+## Uninstall
+
+```bash
+./uninstall.sh          # keeps ~/engagements
+./uninstall.sh --all    # also wipes ~/engagements
 ```
