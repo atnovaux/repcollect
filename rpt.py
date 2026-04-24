@@ -22,7 +22,6 @@ PHASES = {
     "recon":    ["canvass", "trufflehog"],
     "cloud":    ["cloud-enum", "roadtools", "s3scanner"],
     "scanning": ["nmap", "httpx", "gowitness"],
-    "spray":    ["teamfiltration"],
     "dns":      ["dig"],
     "web":      ["ffuf"],
 }
@@ -38,9 +37,6 @@ TOOL_PROMPTS = {
                        ("scan type (quick/full/udp/service)", "scan_type")],
     "httpx":          [("input: file path or single host", "input")],
     "gowitness":      [("input: file path or single URL", "input")],
-    "teamfiltration": [("domain", "domain"),
-                       ("users file path", "users_file"),
-                       ("password", "password")],
     "dig":            [("domain", "domain"),
                        ("record type (A/MX/TXT/NS/ANY)", "record_type")],
     "ffuf":           [("target URL with FUZZ placeholder", "url"),
@@ -331,10 +327,6 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     elif tool == "gowitness":
         inp = prompted["input"]
         return ["scan", "file", "-f", inp] if Path(inp).exists() else ["scan", "single", "-u", inp]
-    elif tool == "teamfiltration":
-        return ["--spray", "--domain", prompted["domain"],
-                "--users", prompted["users_file"],
-                "--password", prompted["password"]]
     elif tool == "dig":
         record = prompted["record_type"]
         return [prompted["domain"], record]

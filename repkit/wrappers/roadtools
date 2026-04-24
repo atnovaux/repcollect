@@ -8,6 +8,9 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RUN_DIR="$OUTPUT_DIR/run_${TIMESTAMP}"
 mkdir -p "$RUN_DIR"
 
+ROADRECON="$HOME/tools/pytools_venv/bin/roadrecon"
+ROADTX="$HOME/tools/pytools_venv/bin/roadtx"
+
 SUBCMD="${1:-}"
 if [[ -z "$SUBCMD" ]]; then
     echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2
@@ -27,15 +30,15 @@ case "$SUBCMD" in
                 ARGS+=("$arg")
             done
             echo "[repkit] roadrecon output -> $RUN_DIR/roadrecon.db" >&2
-            roadrecon gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
+            "$ROADRECON" gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
         else
-            roadrecon "$@"
+            "$ROADRECON" "$@"
         fi
         ;;
     roadtx)
         echo "[repkit] roadtx run dir -> $RUN_DIR" >&2
         cd "$RUN_DIR"
-        roadtx "$@"
+        "$ROADTX" "$@"
         ;;
     *)
         echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2

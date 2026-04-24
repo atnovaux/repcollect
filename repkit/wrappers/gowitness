@@ -17,7 +17,7 @@ for arg in "$@"; do
 done
 
 echo "[repkit] gowitness output -> $OUTPUT_DIR/" >&2
-gowitness \
+"$HOME/go/bin/gowitness" \
     --screenshot-path "$OUTPUT_DIR/screenshots/" \
     --db-path "$OUTPUT_DIR/gowitness.sqlite3" \
     "${ARGS[@]}"

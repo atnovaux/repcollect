@@ -13,5 +13,16 @@ for arg in "$@"; do
     ARGS+=("$arg")
 done
 
+CANVASS_BIN="$HOME/tools/pytools_venv/bin/canvass"
+CANVASS_SCRIPT="$HOME/tools/canvass/canvass.py"
+VENV_PYTHON="$HOME/tools/pytools_venv/bin/python3"
+
 echo "[repkit] canvass output -> $OUTPUT_DIR/" >&2
-exec canvass --output "$OUTPUT_DIR/" "${ARGS[@]}"
+if [[ -x "$CANVASS_BIN" ]]; then
+    exec "$CANVASS_BIN" --output "$OUTPUT_DIR/" "${ARGS[@]}"
+elif [[ -f "$CANVASS_SCRIPT" ]]; then
+    exec "$VENV_PYTHON" "$CANVASS_SCRIPT" --output "$OUTPUT_DIR/" "${ARGS[@]}"
+else
+    echo "error: canvass not found. run install.sh." >&2
+    exit 1
+fi

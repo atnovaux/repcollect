@@ -16,5 +16,5 @@ for arg in "$@"; do
 done
 
 echo "[repkit] httpx output -> $OUTFILE" >&2
-httpx -json -o "$OUTFILE" "${ARGS[@]}"
+"$HOME/go/bin/httpx" -json -o "$OUTFILE" "${ARGS[@]}"
 exit $?

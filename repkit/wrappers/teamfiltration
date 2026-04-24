@@ -5,7 +5,7 @@ source "$SCRIPT_DIR/../lib/engagement.sh"
 
 OUTPUT_DIR=$(ensure_engagement_dir spray) || exit 1
 
-TF_BIN="$HOME/tools/TeamFiltration/TeamFiltration/bin/Release/net6.0/linux-x64/publish/TeamFiltration"
+TF_BIN="$HOME/tools/TeamFiltration/TeamFiltration/TeamFiltration/bin/Release/net9.0/linux-x64/publish/TeamFiltration"
 if [[ ! -f "$TF_BIN" ]]; then
     echo "error: TeamFiltration binary not found at $TF_BIN. run install.sh to build it." >&2
     exit 1

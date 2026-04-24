@@ -16,5 +16,5 @@ for arg in "$@"; do
 done
 
 echo "[repkit] ffuf output -> $OUTFILE" >&2
-ffuf -o "$OUTFILE" -of json "${ARGS[@]}"
+"$HOME/go/bin/ffuf" -o "$OUTFILE" -of json "${ARGS[@]}"
 exit $?

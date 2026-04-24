@@ -15,5 +15,5 @@ for arg in "$@"; do
 done
 
 echo "[repkit] s3scanner output -> $OUTFILE" >&2
-s3scanner -json "${ARGS[@]}" | tee "$OUTFILE"
+"$HOME/go/bin/s3scanner" -json "${ARGS[@]}" | tee "$OUTFILE"
 exit ${PIPESTATUS[0]}
