@@ -1,0 +1,14 @@
+[project]
+name = "repcollect"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[project.scripts]
+rpt = "rpt:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
