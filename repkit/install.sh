@@ -8,6 +8,21 @@ TOOLS_CONF="$REPKIT_DIR/tools.conf"
 TOOLS_DIR="$HOME/tools"
 BIN_DIR="$HOME/bin"
 
+SHELL_RCS=()
+[[ -f "$HOME/.bashrc" ]] && SHELL_RCS+=("$HOME/.bashrc")
+[[ -f "$HOME/.zshrc" ]]  && SHELL_RCS+=("$HOME/.zshrc")
+[[ ${#SHELL_RCS[@]} -eq 0 ]] && SHELL_RCS=("$HOME/.bashrc")
+
+add_to_shell_rcs() {
+    # $1 = grep pattern (fixed-string); $2 = full line to append
+    local pattern="$1" line="$2" rc
+    for rc in "${SHELL_RCS[@]}"; do
+        if ! grep -qF "$pattern" "$rc" 2>/dev/null; then
+            echo "$line" >> "$rc"
+        fi
+    done
+}
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -69,11 +84,9 @@ else
         if [[ -f "$DOTNET_INSTALL_DIR/dotnet" ]]; then
             export DOTNET_ROOT="$DOTNET_INSTALL_DIR"
             export PATH="$PATH:$DOTNET_INSTALL_DIR:$DOTNET_INSTALL_DIR/tools"
-            if ! grep -qF 'DOTNET_ROOT' "$HOME/.bashrc" 2>/dev/null; then
-                echo "export DOTNET_ROOT=\"$DOTNET_INSTALL_DIR\"" >> "$HOME/.bashrc"
-                echo "export PATH=\"\$PATH:\$DOTNET_ROOT:\$DOTNET_ROOT/tools\"" >> "$HOME/.bashrc"
-                ok "added dotnet to PATH in ~/.bashrc"
-            fi
+            add_to_shell_rcs 'DOTNET_ROOT' "export DOTNET_ROOT=\"$DOTNET_INSTALL_DIR\""
+            add_to_shell_rcs 'DOTNET_ROOT:$DOTNET_ROOT/tools' 'export PATH="$PATH:$DOTNET_ROOT:$DOTNET_ROOT/tools"'
+            ok "added dotnet to PATH in shell rc files"
             HAS_DOTNET=1
             ok "dotnet installed via install script"
         else
@@ -82,10 +95,12 @@ else
     fi
 fi
 
-if ! grep -qF 'HOME/bin' "$HOME/.bashrc" 2>/dev/null; then
-    echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc"
-    ok "added ~/bin to PATH in ~/.bashrc"
-fi
+for rc in "${SHELL_RCS[@]}"; do
+    if ! grep -qF 'HOME/bin' "$rc" 2>/dev/null; then
+        echo 'export PATH="$HOME/bin:$PATH"' >> "$rc"
+        ok "added ~/bin to PATH in $(basename "$rc")"
+    fi
+done
 
 # ── Step 3: Create directories + Python venv for tools ────────────────────
 
@@ -107,10 +122,12 @@ VENV_PIP="$PYTOOLS_VENV/bin/pip"
 "$VENV_PIP" install --upgrade pip -q
 
 PYTOOLS_BIN="$PYTOOLS_VENV/bin"
-if ! grep -qF "pytools_venv/bin" "$HOME/.bashrc" 2>/dev/null; then
-    echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$HOME/.bashrc"
-    ok "added $PYTOOLS_BIN to PATH in ~/.bashrc"
-fi
+for rc in "${SHELL_RCS[@]}"; do
+    if ! grep -qF "pytools_venv/bin" "$rc" 2>/dev/null; then
+        echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$rc"
+        ok "added $PYTOOLS_BIN to PATH in $(basename "$rc")"
+    fi
+done
 
 # ── Step 4: Install tools from tools.conf ──────────────────────────────────
 
@@ -219,14 +236,14 @@ install_go() {
         ok "$module"
         INSTALLED_TOOLS+=("$module")
 
-        # ensure ~/go/bin is in PATH
-        local go_bin="$HOME/go/bin"
-        if [[ ":$PATH:" != *":$go_bin:"* ]]; then
-            if ! grep -q 'go/bin' "$HOME/.bashrc" 2>/dev/null; then
-                echo 'export PATH="$HOME/go/bin:$PATH"' >> "$HOME/.bashrc"
-                ok "added ~/go/bin to PATH in ~/.bashrc"
+        # ensure ~/go/bin is in PATH for every shell rc we track
+        local go_bin="$HOME/go/bin" rc
+        for rc in "${SHELL_RCS[@]}"; do
+            if ! grep -qF 'HOME/go/bin' "$rc" 2>/dev/null; then
+                echo 'export PATH="$HOME/go/bin:$PATH"' >> "$rc"
+                ok "added ~/go/bin to PATH in $(basename "$rc")"
             fi
-        fi
+        done
     else
         err "failed to install go module: $module"
         FAILED_TOOLS+=("$module")

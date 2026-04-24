@@ -5,7 +5,6 @@ set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
-BASHRC="$HOME/.bashrc"
 TOOLS_DIR="$HOME/tools"
 BIN_DIR="$HOME/bin"
 REPKIT_DIR="$REPO_DIR/repkit"
@@ -33,7 +32,7 @@ echo "   - $VENV_DIR"
 echo "   - $TOOLS_DIR (git clones + pytools_venv)"
 echo "   - repkit wrapper symlinks in $BIN_DIR"
 echo "   - ~/.dotnet (if installed by repkit)"
-echo "   - repcollect lines in ~/.bashrc"
+echo "   - repcollect lines in ~/.bashrc and ~/.zshrc"
 echo "   - ~/.engagement state file"
 echo "   - go binaries: httpx, gowitness, ffuf, trufflehog, s3scanner"
 if [[ $WIPE_ENGAGEMENTS -eq 1 ]]; then
@@ -104,19 +103,19 @@ fi
 
 # ── ~/.bashrc cleanup ─────────────────────────────────────────────────────
 
-if [[ -f "$BASHRC" ]]; then
-    cp "$BASHRC" "$BASHRC.repcollect-backup.$(date +%s)"
-    ok "backed up ~/.bashrc to ~/.bashrc.repcollect-backup.*"
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [[ -f "$rc" ]] || continue
+    cp "$rc" "$rc.repcollect-backup.$(date +%s)"
+    ok "backed up $rc to $rc.repcollect-backup.*"
 
-    # remove lines we added
-    sed -i '/# repcollect/d' "$BASHRC"
-    sed -i "\|$VENV_DIR/bin/activate|d" "$BASHRC"
-    sed -i '\|pytools_venv/bin|d' "$BASHRC"
-    sed -i '\|HOME/bin:\$PATH|d' "$BASHRC"
-    sed -i '\|HOME/go/bin:\$PATH|d' "$BASHRC"
-    sed -i '/DOTNET_ROOT/d' "$BASHRC"
-    ok "cleaned ~/.bashrc"
-fi
+    sed -i '/# repcollect/d' "$rc"
+    sed -i "\|$VENV_DIR/bin/activate|d" "$rc"
+    sed -i '\|pytools_venv/bin|d' "$rc"
+    sed -i '\|HOME/bin:\$PATH|d' "$rc"
+    sed -i '\|HOME/go/bin:\$PATH|d' "$rc"
+    sed -i '/DOTNET_ROOT/d' "$rc"
+    ok "cleaned $(basename "$rc")"
+done
 
 # ── engagements (optional) ────────────────────────────────────────────────
 

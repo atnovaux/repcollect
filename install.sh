@@ -5,7 +5,20 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
-BASHRC="$HOME/.bashrc"
+
+SHELL_RCS=()
+[[ -f "$HOME/.bashrc" ]] && SHELL_RCS+=("$HOME/.bashrc")
+[[ -f "$HOME/.zshrc" ]]  && SHELL_RCS+=("$HOME/.zshrc")
+[[ ${#SHELL_RCS[@]} -eq 0 ]] && SHELL_RCS=("$HOME/.bashrc")
+
+add_to_shell_rcs() {
+    local pattern="$1" line="$2" rc
+    for rc in "${SHELL_RCS[@]}"; do
+        if ! grep -qF "$pattern" "$rc" 2>/dev/null; then
+            echo "$line" >> "$rc"
+        fi
+    done
+}
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -36,14 +49,18 @@ ok "rpt installed"
 # ── Add venv activation to ~/.bashrc ──────────────────────────────────────
 
 ACTIVATE_LINE="source $VENV_DIR/bin/activate"
-if ! grep -qF "$ACTIVATE_LINE" "$BASHRC" 2>/dev/null; then
-    echo "" >> "$BASHRC"
-    echo "# repcollect" >> "$BASHRC"
-    echo "$ACTIVATE_LINE" >> "$BASHRC"
-    ok "added rpt to shell (source ~/.bashrc or open a new terminal)"
-else
-    ok "shell activation already in ~/.bashrc"
-fi
+for rc in "${SHELL_RCS[@]}"; do
+    if ! grep -qF "$ACTIVATE_LINE" "$rc" 2>/dev/null; then
+        {
+            echo ""
+            echo "# repcollect"
+            echo "$ACTIVATE_LINE"
+        } >> "$rc"
+        ok "added rpt to $(basename "$rc")"
+    else
+        ok "rpt already in $(basename "$rc")"
+    fi
+done
 
 # ── repkit ─────────────────────────────────────────────────────────────────
 
@@ -62,7 +79,7 @@ echo "════════════════════════�
 echo " all done."
 echo "══════════════════════════════════════════════"
 echo ""
-echo " run:  source ~/.bashrc"
+echo " run:  source ~/.bashrc  (or ~/.zshrc if you use zsh)"
 echo " then: eng new <target>"
 echo "       rpt run -t ext -p recon"
 echo ""
