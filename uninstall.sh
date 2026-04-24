@@ -32,7 +32,7 @@ echo "   - $VENV_DIR"
 echo "   - $TOOLS_DIR (git clones + pytools_venv)"
 echo "   - repkit wrapper symlinks in $BIN_DIR"
 echo "   - ~/.dotnet (if installed by repkit)"
-echo "   - repcollect lines in ~/.bashrc and ~/.zshrc"
+echo "   - repcollect lines in ~/.zshrc"
 echo "   - ~/.engagement state file"
 echo "   - go binaries: httpx, gowitness, ffuf, trufflehog, s3scanner"
 if [[ $WIPE_ENGAGEMENTS -eq 1 ]]; then
@@ -97,21 +97,21 @@ if [[ -f "$HOME/.engagement" ]]; then
     ok "removed ~/.engagement"
 fi
 
-# ── ~/.bashrc cleanup ─────────────────────────────────────────────────────
+# ── ~/.zshrc cleanup ─────────────────────────────────────────────────────
 
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    [[ -f "$rc" ]] || continue
-    cp "$rc" "$rc.repcollect-backup.$(date +%s)"
-    ok "backed up $rc to $rc.repcollect-backup.*"
+ZSHRC="$HOME/.zshrc"
+if [[ -f "$ZSHRC" ]]; then
+    cp "$ZSHRC" "$ZSHRC.repcollect-backup.$(date +%s)"
+    ok "backed up ~/.zshrc to ~/.zshrc.repcollect-backup.*"
 
-    sed -i '/# repcollect/d' "$rc"
-    sed -i "\|$VENV_DIR/bin/activate|d" "$rc"
-    sed -i '\|pytools_venv/bin|d' "$rc"
-    sed -i '\|HOME/bin:\$PATH|d' "$rc"
-    sed -i '\|HOME/go/bin:\$PATH|d' "$rc"
-    sed -i '/DOTNET_ROOT/d' "$rc"
-    ok "cleaned $(basename "$rc")"
-done
+    sed -i '/# repcollect/d' "$ZSHRC"
+    sed -i "\|$VENV_DIR/bin/activate|d" "$ZSHRC"
+    sed -i '\|pytools_venv/bin|d' "$ZSHRC"
+    sed -i '\|HOME/bin:\$PATH|d' "$ZSHRC"
+    sed -i '\|HOME/go/bin:\$PATH|d' "$ZSHRC"
+    sed -i '/DOTNET_ROOT/d' "$ZSHRC"
+    ok "cleaned ~/.zshrc"
+fi
 
 # ── engagements (optional) ────────────────────────────────────────────────
 
@@ -124,5 +124,5 @@ echo ""
 echo "══════════════════════════════════════════════"
 echo " uninstall complete"
 echo "══════════════════════════════════════════════"
-echo " run: source ~/.bashrc   (or open a new shell)"
+echo " run: source ~/.zshrc   (or open a new shell)"
 echo ""

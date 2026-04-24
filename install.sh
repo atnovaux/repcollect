@@ -5,20 +5,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
-
-SHELL_RCS=()
-[[ -f "$HOME/.bashrc" ]] && SHELL_RCS+=("$HOME/.bashrc")
-[[ -f "$HOME/.zshrc" ]]  && SHELL_RCS+=("$HOME/.zshrc")
-[[ ${#SHELL_RCS[@]} -eq 0 ]] && SHELL_RCS=("$HOME/.bashrc")
-
-add_to_shell_rcs() {
-    local pattern="$1" line="$2" rc
-    for rc in "${SHELL_RCS[@]}"; do
-        if ! grep -qF "$pattern" "$rc" 2>/dev/null; then
-            echo "$line" >> "$rc"
-        fi
-    done
-}
+ZSHRC="$HOME/.zshrc"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -46,21 +33,19 @@ fi
 "$VENV_DIR/bin/pip" install -e "$REPO_DIR" -q
 ok "rpt installed"
 
-# ── Add venv activation to ~/.bashrc ──────────────────────────────────────
+# ── Add venv activation to ~/.zshrc ───────────────────────────────────────
 
 ACTIVATE_LINE="source $VENV_DIR/bin/activate"
-for rc in "${SHELL_RCS[@]}"; do
-    if ! grep -qF "$ACTIVATE_LINE" "$rc" 2>/dev/null; then
-        {
-            echo ""
-            echo "# repcollect"
-            echo "$ACTIVATE_LINE"
-        } >> "$rc"
-        ok "added rpt to $(basename "$rc")"
-    else
-        ok "rpt already in $(basename "$rc")"
-    fi
-done
+if ! grep -qF "$ACTIVATE_LINE" "$ZSHRC" 2>/dev/null; then
+    {
+        echo ""
+        echo "# repcollect"
+        echo "$ACTIVATE_LINE"
+    } >> "$ZSHRC"
+    ok "added rpt to ~/.zshrc"
+else
+    ok "rpt already in ~/.zshrc"
+fi
 
 # ── repkit ─────────────────────────────────────────────────────────────────
 
@@ -79,10 +64,9 @@ echo "════════════════════════�
 echo " all done."
 echo "══════════════════════════════════════════════"
 echo ""
-SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
-RC_FILE="~/.${SHELL_NAME}rc"
-echo " 1. reload shell:  source $RC_FILE   (or open a new terminal)"
-echo " 2. create engagement:  rpt new <target>"
-echo " 3. set active:  rpt use <target>"
-echo " 4. run a phase:  rpt run -t ext -p recon"
+echo " next steps:"
+echo "   1. source ~/.zshrc"
+echo "   2. rpt new <target>   — create your first engagement"
+echo "   3. rpt use <target>   — set the active engagement"
+echo "   4. rpt run -t ext -p recon   — run your first phase"
 echo ""

@@ -7,20 +7,14 @@ REPKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLS_CONF="$REPKIT_DIR/tools.conf"
 TOOLS_DIR="$HOME/tools"
 BIN_DIR="$HOME/bin"
+ZSHRC="$HOME/.zshrc"
 
-SHELL_RCS=()
-[[ -f "$HOME/.bashrc" ]] && SHELL_RCS+=("$HOME/.bashrc")
-[[ -f "$HOME/.zshrc" ]]  && SHELL_RCS+=("$HOME/.zshrc")
-[[ ${#SHELL_RCS[@]} -eq 0 ]] && SHELL_RCS=("$HOME/.bashrc")
-
-add_to_shell_rcs() {
+add_to_zshrc() {
     # $1 = grep pattern (fixed-string); $2 = full line to append
-    local pattern="$1" line="$2" rc
-    for rc in "${SHELL_RCS[@]}"; do
-        if ! grep -qF "$pattern" "$rc" 2>/dev/null; then
-            echo "$line" >> "$rc"
-        fi
-    done
+    local pattern="$1" line="$2"
+    if ! grep -qF "$pattern" "$ZSHRC" 2>/dev/null; then
+        echo "$line" >> "$ZSHRC"
+    fi
 }
 
 GREEN='\033[0;32m'
@@ -84,9 +78,9 @@ else
         if [[ -f "$DOTNET_INSTALL_DIR/dotnet" ]]; then
             export DOTNET_ROOT="$DOTNET_INSTALL_DIR"
             export PATH="$PATH:$DOTNET_INSTALL_DIR:$DOTNET_INSTALL_DIR/tools"
-            add_to_shell_rcs 'DOTNET_ROOT' "export DOTNET_ROOT=\"$DOTNET_INSTALL_DIR\""
-            add_to_shell_rcs 'DOTNET_ROOT:$DOTNET_ROOT/tools' 'export PATH="$PATH:$DOTNET_ROOT:$DOTNET_ROOT/tools"'
-            ok "added dotnet to PATH in shell rc files"
+            add_to_zshrc 'DOTNET_ROOT' "export DOTNET_ROOT=\"$DOTNET_INSTALL_DIR\""
+            add_to_zshrc 'DOTNET_ROOT:$DOTNET_ROOT/tools' 'export PATH="$PATH:$DOTNET_ROOT:$DOTNET_ROOT/tools"'
+            ok "added dotnet to PATH in ~/.zshrc"
             HAS_DOTNET=1
             ok "dotnet installed via install script"
         else
@@ -95,12 +89,10 @@ else
     fi
 fi
 
-for rc in "${SHELL_RCS[@]}"; do
-    if ! grep -qF 'HOME/bin' "$rc" 2>/dev/null; then
-        echo 'export PATH="$HOME/bin:$PATH"' >> "$rc"
-        ok "added ~/bin to PATH in $(basename "$rc")"
-    fi
-done
+if ! grep -qF 'HOME/bin' "$ZSHRC" 2>/dev/null; then
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$ZSHRC"
+    ok "added ~/bin to PATH in ~/.zshrc"
+fi
 
 # ── Step 3: Create directories + Python venv for tools ────────────────────
 
@@ -122,12 +114,10 @@ VENV_PIP="$PYTOOLS_VENV/bin/pip"
 "$VENV_PIP" install --upgrade pip -q
 
 PYTOOLS_BIN="$PYTOOLS_VENV/bin"
-for rc in "${SHELL_RCS[@]}"; do
-    if ! grep -qF "pytools_venv/bin" "$rc" 2>/dev/null; then
-        echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$rc"
-        ok "added $PYTOOLS_BIN to PATH in $(basename "$rc")"
-    fi
-done
+if ! grep -qF "pytools_venv/bin" "$ZSHRC" 2>/dev/null; then
+    echo "export PATH=\"$PYTOOLS_BIN:\$PATH\"" >> "$ZSHRC"
+    ok "added $PYTOOLS_BIN to PATH in ~/.zshrc"
+fi
 
 # ── Step 4: Install tools from tools.conf ──────────────────────────────────
 
@@ -236,14 +226,11 @@ install_go() {
         ok "$module"
         INSTALLED_TOOLS+=("$module")
 
-        # ensure ~/go/bin is in PATH for every shell rc we track
-        local go_bin="$HOME/go/bin" rc
-        for rc in "${SHELL_RCS[@]}"; do
-            if ! grep -qF 'HOME/go/bin' "$rc" 2>/dev/null; then
-                echo 'export PATH="$HOME/go/bin:$PATH"' >> "$rc"
-                ok "added ~/go/bin to PATH in $(basename "$rc")"
-            fi
-        done
+        # ensure ~/go/bin is in PATH
+        if ! grep -qF 'HOME/go/bin' "$ZSHRC" 2>/dev/null; then
+            echo 'export PATH="$HOME/go/bin:$PATH"' >> "$ZSHRC"
+            ok "added ~/go/bin to PATH in ~/.zshrc"
+        fi
     else
         err "failed to install go module: $module"
         FAILED_TOOLS+=("$module")
@@ -297,10 +284,4 @@ if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
     echo -e "${RED} failed${NC}"
     for t in "${FAILED_TOOLS[@]}"; do echo "   x $t"; done
 fi
-echo ""
-echo " next steps:"
-echo "   1. source ~/.bashrc"
-echo "   2. rpt new <target>   — create your first engagement"
-echo "   3. rpt use <target>   — set the active engagement"
-echo "   4. rpt run -t ext -p recon   — run your first phase"
 echo ""
