@@ -59,13 +59,13 @@ if command -v dotnet &>/dev/null; then
     HAS_DOTNET=1
 else
     echo "dotnet not found. installing..."
-    if apt-cache show dotnet-sdk-8.0 &>/dev/null 2>&1 && sudo apt install -y dotnet-sdk-8.0; then
+    if apt-cache show dotnet-sdk-9.0 &>/dev/null 2>&1 && sudo apt install -y dotnet-sdk-9.0; then
         HAS_DOTNET=1
-        ok "dotnet-sdk-8.0 installed via apt"
+        ok "dotnet-sdk-9.0 installed via apt"
     else
         echo "    apt install failed, trying Microsoft install script..."
         DOTNET_INSTALL_DIR="$HOME/.dotnet"
-        curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir "$DOTNET_INSTALL_DIR"
+        curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 9.0 --install-dir "$DOTNET_INSTALL_DIR"
         if [[ -f "$DOTNET_INSTALL_DIR/dotnet" ]]; then
             export DOTNET_ROOT="$DOTNET_INSTALL_DIR"
             export PATH="$PATH:$DOTNET_INSTALL_DIR:$DOTNET_INSTALL_DIR/tools"
