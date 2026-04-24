@@ -29,10 +29,6 @@ if [[ -z "${BASH_VERSION:-}" ]]; then
     exit 1
 fi
 
-if [[ "$EUID" -eq 0 ]]; then
-    err "do not run install.sh as root. run as your operator user."
-    exit 1
-fi
 
 if [[ ! -f "$TOOLS_CONF" ]]; then
     err "tools.conf not found. run install.sh from the repkit/ directory."

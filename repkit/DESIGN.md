@@ -292,7 +292,6 @@ Every action in install.sh must be safe to run a second time without causing err
 
 | Condition | Behavior |
 |---|---|
-| Script run as root | Exit 1 with message: "error: do not run install.sh as root. run as your operator user." |
 | `apt` not found | Exit 1: "error: apt not found. repkit requires a Debian-based system." |
 | `git` not found | Exit 1: "error: git is required." |
 | `python3` not found | Exit 1: "error: python3 is required." |

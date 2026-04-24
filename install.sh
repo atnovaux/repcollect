@@ -16,10 +16,6 @@ ok()   { echo -e "${GREEN}[ok]${NC}    $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC}  $*"; }
 err()  { echo -e "${RED}[error]${NC} $*"; }
 
-if [[ "$EUID" -eq 0 ]]; then
-    err "do not run as root."
-    exit 1
-fi
 
 echo "setting up repcollect..."
 
