@@ -168,7 +168,7 @@ The script executes the following steps in order:
 **Step 1: Sanity checks**
 
 - Verify the shell is bash (fail if `$BASH_VERSION` is unset).
-- Verify the script is not being run as root directly (fail if `$EUID -eq 0`). Print a message telling the operator to run as their user account.
+- Kali engagement boxes typically run as root; install.sh does NOT reject running as root. It will use `sudo` where needed (e.g., `apt install`) but makes no assumption about the current user.
 - Verify `~/bin` is in `$PATH`. If it is not, print a warning and instructions for adding it (e.g., `export PATH="$HOME/bin:$PATH"` in `~/.zshrc`). Do not fail; continue.
 
 **Step 2: Verify system dependencies**
@@ -304,47 +304,30 @@ Where `<method>` is one of: `apt`, `git`, `pip`, `go`, `manual`.
 
 ### 6.2 Complete Tool List
 
+See [repkit/tools.conf](tools.conf) for the authoritative tool list. Current contents:
+
 ```
-# repkit tools.conf
-# format: <method>:<value>
-
-# ── Recon / OSINT ──────────────────────────────────────────────────────
-# canvass: cloned from https://github.com/atnovaux/canvass.git
+# ── Recon / OSINT ──────────────────────────────────────────────────────────
 git:https://github.com/atnovaux/canvass.git
+git:https://github.com/trufflesecurity/trufflehog.git
 
-# TruffleHog: secrets scanner
-pip:trufflehog
-
-# ── Cloud / Identity ────────────────────────────────────────────────────
-# cloud_enum: multi-cloud OSINT enumeration
+# ── Cloud / Identity ───────────────────────────────────────────────────────
 git:https://github.com/initstring/cloud_enum
-
-# ROADtools: Azure AD enumeration suite
 pip:roadtools
+git:https://github.com/sa7mon/S3Scanner.git
 
-# S3Scanner: unauthenticated S3 bucket scanner
-pip:s3scanner
-
-# ── Active Scanning ─────────────────────────────────────────────────────
-# nmap: network mapper (standard Kali package)
+# ── Active Scanning ────────────────────────────────────────────────────────
 apt:nmap
-
-# httpx: fast HTTP probe
 go:github.com/projectdiscovery/httpx/cmd/httpx
-
-# gowitness: web screenshot tool
 go:github.com/sensepost/gowitness
 
-# ── User Enum & Password Spray ──────────────────────────────────────────
-# TeamFiltration: O365 user enumeration and spray
+# ── User Enum & Password Spray ─────────────────────────────────────────────
 git:https://github.com/Flangvik/TeamFiltration
 
-# ── DNS / Email ─────────────────────────────────────────────────────────
-# dig: DNS lookup utility (part of bind9-dnsutils on Kali)
+# ── DNS / Email ────────────────────────────────────────────────────────────
 apt:bind9-dnsutils
 
-# ── Web Discovery ───────────────────────────────────────────────────────
-# ffuf: fast web fuzzer written in Go
+# ── Web Discovery ──────────────────────────────────────────────────────────
 go:github.com/ffuf/ffuf/v2
 ```
 
@@ -352,17 +335,19 @@ go:github.com/ffuf/ffuf/v2
 
 | Tool | Method | Rationale |
 |---|---|---|
-| canvass | git | Cloned from https://github.com/atnovaux/canvass.git; installed via pip install -e after clone |
-| TruffleHog | pip | Official distribution via PyPI (`trufflehog` package) |
-| cloud_enum | git | No PyPI package; installed from GitHub with `pip install -r requirements.txt` |
-| ROADtools | pip | Official PyPI package (`roadtools`); installs `roadrecon` and `roadtx` CLI |
-| S3Scanner | pip | PyPI package (`s3scanner`) |
-| Nmap | apt | Standard Kali package; always present but pinned for explicitness |
-| httpx | go | Official distribution via `go install`; projectdiscovery does not publish apt packages |
-| gowitness | go | Official distribution via `go install`; no apt package |
-| TeamFiltration | git | .NET tool; `git clone` + build via `dotnet publish` — see wrapper spec for binary path |
-| dig | apt | Part of `bind9-dnsutils`; present on Kali but explicit for documentation |
-| ffuf | go | Official distribution via `go install`; fastest way to get the latest version |
+| canvass | git | Cloned from upstream; `brief.py` run via the pytools venv python |
+| trufflehog | git | Go source; built via `go install ./...` during `install_git` |
+| cloud_enum | git | Single-script Python tool; requirements installed into pytools venv |
+| roadtools | pip | Official PyPI package; installs `roadrecon` and `roadtx` CLIs into the pytools venv |
+| s3scanner | git | Go source; built via `go install ./...` during `install_git` |
+| nmap | apt | Standard Kali package; pinned for explicitness |
+| httpx | go | Official `go install` from projectdiscovery |
+| gowitness | go | Official `go install` from sensepost |
+| TeamFiltration | git | .NET tool; cloned, built via `dotnet publish -c Release -r linux-x64 --self-contained true` |
+| dig | apt | Part of `bind9-dnsutils` |
+| ffuf | go | Official `go install` |
+
+All Python tools (canvass, cloud_enum, roadtools) install into `~/tools/pytools_venv/` — never into the system Python or repcollect's rpt venv. This isolates them from Kali's PEP 668 enforcement and from each other.
 
 ---
 
@@ -528,574 +513,25 @@ exec /path/to/real/<tool> \
 
 ## 9. Per-Tool Wrapper Specifications
 
-### 9.1 canvass
-
-**Tool description:** Internal OSINT collection tool from the repcollect project. Accepts a target domain and writes JSON output to a specified path.
-
-**Real binary:** `canvass` (Installed from https://github.com/atnovaux/canvass.git via git clone into ~/tools/canvass/; pip install -e ~/tools/canvass/ adds the canvass binary to PATH.)
-
-**Engagement subdirectory:** `recon/`
-
-**Output mechanism:** canvass accepts `--output <file>` to write JSON results. The wrapper forces this flag to `$OUTPUT_DIR/canvass.json`.
-
-**Conflicting flag handling:** If the operator passes `--output` or `-o`, the wrapper strips those arguments (and their values) before constructing the exec call.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/canvass — repkit wrapper for canvass
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir recon) || exit 1
-
-# Strip any --output/-o flags supplied by the operator
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then
-        skip_next=0
-        continue
-    fi
-    if [[ "$arg" == "--output" || "$arg" == "-o" ]]; then
-        skip_next=1
-        continue
-    fi
-    ARGS+=("$arg")
-done
-
-exec canvass --output "$OUTPUT_DIR/canvass.json" "${ARGS[@]}"
-```
-
-**Output files written:** `~/engagements/<target>/recon/canvass.json`
-
----
-
-### 9.2 trufflehog
-
-**Tool description:** Scans git repositories, filesystems, and other sources for secrets and credentials. Distributed via pip as `trufflehog`.
-
-**Real binary:** `trufflehog` (pip-installed; available on PATH after pip install)
-
-**Engagement subdirectory:** `trufflehog/`
-
-**Output mechanism:** TruffleHog writes results to stdout by default. It supports `--json` for machine-readable output. The wrapper runs trufflehog with `--json` and redirects stdout to a file. Stderr (progress, errors) still prints to the terminal.
-
-TruffleHog does not have a native `--output <file>` flag in the CLI (output is always to stdout). The wrapper uses shell redirection.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/trufflehog — repkit wrapper for trufflehog
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir trufflehog) || exit 1
-OUTFILE="$OUTPUT_DIR/trufflehog.json"
-
-echo "[repkit] trufflehog output -> $OUTFILE" >&2
-
-exec trufflehog --json "$@" > "$OUTFILE"
-```
-
-Note: `exec` with stdout redirection requires care — this wrapper does not use `exec` with the redirect directly (not portable). Instead it uses:
-
-```bash
-trufflehog --json "$@" > "$OUTFILE"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/trufflehog/trufflehog.json`
-
-**Note:** Multiple runs append collisions in filename. The wrapper uses a timestamped filename to avoid overwriting:
-
-```bash
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/trufflehog_${TIMESTAMP}.json"
-```
-
-This pattern (timestamp suffix) is used for all tools that write a single output file and may be run multiple times per engagement. Tools like nmap that use `-oA` with a basename benefit from the same pattern.
-
----
-
-### 9.3 cloud-enum
-
-**Tool description:** `cloud_enum` by initstring. Enumerates cloud resources across AWS, Azure, and GCP using keyword-based DNS and HTTP checks.
-
-**Real binary:** `cloud_enum.py` located at `~/tools/cloud_enum/cloud_enum.py` (git clone; no `pip install` entry point). The wrapper calls the script directly via Python.
-
-**Engagement subdirectory:** `cloud/`
-
-**Output mechanism:** cloud_enum supports:
-- `-l <file>` or `--logfile <file>`: writes a plain-text log to a file
-- `-m <modules>`: optional module selection
-
-The wrapper forces `-l "$OUTPUT_DIR/cloud_enum_<timestamp>.txt"`. cloud_enum does not support JSON output natively; the log file is the primary artifact.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/cloud-enum — repkit wrapper for cloud_enum
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir cloud) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/cloud_enum_${TIMESTAMP}.txt"
-
-CLOUD_ENUM="$HOME/tools/cloud_enum/cloud_enum.py"
-if [[ ! -f "$CLOUD_ENUM" ]]; then
-    echo "error: cloud_enum not found at $CLOUD_ENUM. run install.sh." >&2
-    exit 1
-fi
-
-# Strip -l/--logfile flags from operator args
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "-l" || "$arg" == "--logfile" ]]; then skip_next=1; continue; fi
-    ARGS+=("$arg")
-done
-
-echo "[repkit] cloud-enum output -> $OUTFILE" >&2
-python3 "$CLOUD_ENUM" -l "$OUTFILE" "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/cloud/cloud_enum_<timestamp>.txt`
-
----
-
-### 9.4 roadtools
-
-**Tool description:** ROADtools is an Azure Active Directory enumeration suite by Dirk-jan Mollema. The primary CLI commands are `roadrecon` (data collection) and `roadtx` (token acquisition).
-
-**Real binary:** `roadrecon` and `roadtx` (pip-installed; both are on PATH after `pip install roadtools`)
-
-**Engagement subdirectory:** `roadtools/`
-
-**Output mechanism:** `roadrecon gather` writes to a local SQLite database. The database path is set with `-d <file>` or `--database <file>`. Default is `roadrecon.db` in the current working directory.
-
-The wrapper changes into `$OUTPUT_DIR` before running `roadrecon`, so the default database is written there. It also explicitly passes `-d "$OUTPUT_DIR/roadrecon.db"` to `roadrecon gather` subcommands.
-
-For `roadtx` tokens and `roadrecon auth`, output is stdout/tokens file; the wrapper creates a timestamped subdirectory under `$OUTPUT_DIR` for each run to avoid collision.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/roadtools — repkit wrapper for roadrecon/roadtx
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir roadtools) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-RUN_DIR="$OUTPUT_DIR/run_${TIMESTAMP}"
-mkdir -p "$RUN_DIR"
-
-# Determine which roadtools command the operator is invoking
-SUBCMD="${1:-}"
-
-case "$SUBCMD" in
-    roadrecon)
-        shift
-        # Inject -d for gather subcommand
-        if [[ "${1:-}" == "gather" ]]; then
-            shift
-            ARGS=()
-            skip_next=0
-            for arg in "$@"; do
-                if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-                if [[ "$arg" == "-d" || "$arg" == "--database" ]]; then skip_next=1; continue; fi
-                ARGS+=("$arg")
-            done
-            echo "[repkit] roadrecon output -> $RUN_DIR/roadrecon.db" >&2
-            roadrecon gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
-        else
-            roadrecon "$@"
-        fi
-        ;;
-    roadtx)
-        shift
-        echo "[repkit] roadtx run dir -> $RUN_DIR" >&2
-        cd "$RUN_DIR"
-        roadtx "$@"
-        ;;
-    *)
-        echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2
-        exit 1
-        ;;
-esac
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/roadtools/run_<timestamp>/roadrecon.db` (and roadtx artifacts in the same run directory)
-
----
-
-### 9.5 s3scanner
-
-**Tool description:** S3Scanner by sa7mon. Scans for open, misconfigured, or listable S3 buckets. Distributed via pip as `s3scanner`.
-
-**Real binary:** `s3scanner` (pip-installed)
-
-**Engagement subdirectory:** `s3scanner/`
-
-**Output mechanism:** s3scanner supports `--out-file <file>` to write results to a file (one bucket per line with status). It also supports `--json` to write JSON output. The wrapper uses `--out-file "$OUTPUT_DIR/s3scanner_<timestamp>.txt"`.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/s3scanner — repkit wrapper for s3scanner
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir s3scanner) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/s3scanner_${TIMESTAMP}.txt"
-
-# Strip --out-file flags
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "--out-file" ]]; then skip_next=1; continue; fi
-    ARGS+=("$arg")
-done
-
-echo "[repkit] s3scanner output -> $OUTFILE" >&2
-s3scanner --out-file "$OUTFILE" "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/s3scanner/s3scanner_<timestamp>.txt`
-
----
-
-### 9.6 nmap
-
-**Tool description:** Network mapper. The canonical Kali Linux network scanner.
-
-**Real binary:** `/usr/bin/nmap` (full path used to avoid self-invocation since the wrapper is named `nmap` and shadows the system binary in `~/bin/`)
-
-**Engagement subdirectory:** `nmap/`
-
-**Output mechanism:** nmap supports `-oA <basename>` which writes three output files simultaneously:
-- `<basename>.nmap` — normal (human-readable) output
-- `<basename>.xml` — XML output
-- `<basename>.gnmap` — grepable output
-
-The wrapper forces `-oA "$OUTPUT_DIR/nmap_<timestamp>"`. This gives all three formats in one invocation.
-
-**Conflicting flag handling:** The wrapper strips `-oA`, `-oN`, `-oX`, `-oG`, `-oS` and their values from operator-supplied arguments before appending the forced `-oA`.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/nmap — repkit wrapper for nmap
-# forces -oA output to the active engagement nmap directory
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir nmap) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BASENAME="$OUTPUT_DIR/nmap_${TIMESTAMP}"
-
-# Strip output flags from operator args
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    case "$arg" in
-        -oA|-oN|-oX|-oG|-oS)
-            skip_next=1
-            continue
-            ;;
-    esac
-    ARGS+=("$arg")
-done
-
-echo "[repkit] nmap output -> ${BASENAME}.{nmap,xml,gnmap}" >&2
-exec /usr/bin/nmap -oA "$BASENAME" "${ARGS[@]}"
-```
-
-**Output files written:**
-- `~/engagements/<target>/nmap/nmap_<timestamp>.nmap`
-- `~/engagements/<target>/nmap/nmap_<timestamp>.xml`
-- `~/engagements/<target>/nmap/nmap_<timestamp>.gnmap`
-
----
-
-### 9.7 httpx
-
-**Tool description:** Fast HTTP probe by ProjectDiscovery. Accepts a list of hosts/URLs and probes them for live HTTP services.
-
-**Real binary:** `httpx` (go-installed; in `$GOPATH/bin` or `$HOME/go/bin`)
-
-**Engagement subdirectory:** `httpx/`
-
-**Output mechanism:** httpx supports:
-- `-o <file>` or `-output <file>`: write output to a file (one result per line)
-- `-json`: output in JSON format (use with `-o` for JSON file)
-
-The wrapper forces `-o "$OUTPUT_DIR/httpx_<timestamp>.json"` and `-json` for structured output. If the operator passes `-o` or `-output`, those are stripped.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/httpx — repkit wrapper for httpx
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir httpx) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/httpx_${TIMESTAMP}.json"
-
-# Strip -o/-output flags
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "-o" || "$arg" == "-output" ]]; then skip_next=1; continue; fi
-    ARGS+=("$arg")
-done
-
-echo "[repkit] httpx output -> $OUTFILE" >&2
-httpx -json -o "$OUTFILE" "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/httpx/httpx_<timestamp>.json`
-
----
-
-### 9.8 gowitness
-
-**Tool description:** Web screenshot tool by sensepost. Takes screenshots of URLs using a headless Chrome/Chromium browser.
-
-**Real binary:** `gowitness` (go-installed)
-
-**Engagement subdirectory:** `gowitness/`
-
-**Output mechanism:** gowitness stores screenshots and a sqlite database. The output directory is set with `--screenshot-path <dir>` (or `--destination` in older versions). The database path is `--db-path <file>`.
-
-The wrapper forces:
-- `--screenshot-path "$OUTPUT_DIR/screenshots/"`
-- `--db-path "$OUTPUT_DIR/gowitness.sqlite3"`
-
-**Conflicting flag handling:** Strip `--screenshot-path`, `--destination`, `--db-path` and their values.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/gowitness — repkit wrapper for gowitness
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir gowitness) || exit 1
-mkdir -p "$OUTPUT_DIR/screenshots"
-
-# Strip output-related flags
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    case "$arg" in
-        --screenshot-path|--destination|--db-path)
-            skip_next=1; continue ;;
-    esac
-    ARGS+=("$arg")
-done
-
-echo "[repkit] gowitness output -> $OUTPUT_DIR/" >&2
-gowitness \
-    --screenshot-path "$OUTPUT_DIR/screenshots/" \
-    --db-path "$OUTPUT_DIR/gowitness.sqlite3" \
-    "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:**
-- `~/engagements/<target>/gowitness/screenshots/<url-hash>.png` (one per screenshotted URL)
-- `~/engagements/<target>/gowitness/gowitness.sqlite3`
-
----
-
-### 9.9 teamfiltration
-
-**Tool description:** TeamFiltration by Flangvik. Enumerates and sprays Microsoft 365 / Azure AD accounts via Teams, SharePoint, and OneDrive endpoints.
-
-**Real binary:** TeamFiltration is a .NET 6 application compiled from source. After `git clone` and `dotnet publish`, the binary is at `~/tools/TeamFiltration/TeamFiltration/bin/Release/net6.0/linux-x64/publish/TeamFiltration`. install.sh builds this binary and symlinks it to `~/bin/TeamFiltration-bin` (to avoid shadowing the wrapper).
-
-**Engagement subdirectory:** `spray/`
-
-**Output mechanism:** TeamFiltration writes all output to a directory specified with `--outdir <dir>`. It creates subdirectories within that directory for each module (e.g., `--enum`, `--spray`, `--exfil`). The wrapper forces `--outdir "$OUTPUT_DIR"`.
-
-**Conflicting flag handling:** Strip `--outdir` and its value.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/teamfiltration — repkit wrapper for TeamFiltration
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir spray) || exit 1
-
-TF_BIN="$HOME/tools/TeamFiltration/TeamFiltration/bin/Release/net6.0/linux-x64/publish/TeamFiltration"
-if [[ ! -f "$TF_BIN" ]]; then
-    echo "error: TeamFiltration binary not found at $TF_BIN. run install.sh to build it." >&2
-    exit 1
-fi
-
-# Strip --outdir flag
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "--outdir" ]]; then skip_next=1; continue; fi
-    ARGS+=("$arg")
-done
-
-echo "[repkit] teamfiltration output -> $OUTPUT_DIR/" >&2
-"$TF_BIN" --outdir "$OUTPUT_DIR" "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/spray/` (TeamFiltration creates its own subdirectory structure within this directory)
-
-**Note on install.sh:** For TeamFiltration, `tools.conf` uses `git:https://github.com/Flangvik/TeamFiltration`. After cloning, install.sh runs:
-
-```bash
-cd ~/tools/TeamFiltration/TeamFiltration
-dotnet publish -c Release -r linux-x64 --self-contained true
-```
-
-install.sh checks for `dotnet` before attempting this build and prints an error if it is not found.
-
----
-
-### 9.10 dig
-
-**Tool description:** DNS lookup utility from `bind9-dnsutils`. Standard DNS querying tool.
-
-**Real binary:** `/usr/bin/dig` (full path used to avoid self-invocation)
-
-**Engagement subdirectory:** `dns/`
-
-**Output mechanism:** dig writes results exclusively to stdout. There is no native output-to-file flag. The wrapper redirects stdout to a timestamped file while also printing to the terminal (using `tee`).
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/dig — repkit wrapper for dig
-# dig has no native file output; wrapper uses tee to write stdout to file
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir dns) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/dig_${TIMESTAMP}.txt"
-
-echo "[repkit] dig output -> $OUTFILE" >&2
-/usr/bin/dig "$@" | tee "$OUTFILE"
-exit ${PIPESTATUS[0]}
-```
-
-Note: `${PIPESTATUS[0]}` captures dig's exit code rather than tee's, preserving correct error propagation through the pipe.
-
-**Output files written:** `~/engagements/<target>/dns/dig_<timestamp>.txt`
-
----
-
-### 9.11 ffuf
-
-**Tool description:** Fast web fuzzer by ffuf. Used for directory/file enumeration, parameter fuzzing, and vhost discovery.
-
-**Real binary:** `ffuf` (go-installed)
-
-**Engagement subdirectory:** `ffuf/`
-
-**Output mechanism:** ffuf supports:
-- `-o <file>`: output file path
-- `-of <format>`: output format (`json`, `ejson`, `html`, `md`, `csv`, `all`)
-
-The wrapper forces `-o "$OUTPUT_DIR/ffuf_<timestamp>.json"` and `-of json`. Using JSON format ensures machine-readable output for repcollect.
-
-**Conflicting flag handling:** Strip `-o` and `-of` (and their values) from operator arguments.
-
-**Wrapper:**
-
-```bash
-#!/usr/bin/env bash
-# wrappers/ffuf — repkit wrapper for ffuf
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-source "$SCRIPT_DIR/../lib/engagement.sh"
-
-OUTPUT_DIR=$(ensure_engagement_dir ffuf) || exit 1
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTFILE="$OUTPUT_DIR/ffuf_${TIMESTAMP}.json"
-
-# Strip -o and -of flags
-ARGS=()
-skip_next=0
-for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
-    if [[ "$arg" == "-o" || "$arg" == "-of" ]]; then skip_next=1; continue; fi
-    ARGS+=("$arg")
-done
-
-echo "[repkit] ffuf output -> $OUTFILE" >&2
-ffuf -o "$OUTFILE" -of json "${ARGS[@]}"
-exit $?
-```
-
-**Output files written:** `~/engagements/<target>/ffuf/ffuf_<timestamp>.json`
-
----
+The wrapper files in `repkit/wrappers/` are the source of truth. Each wrapper sources `lib/engagement.sh`, calls `ensure_engagement_dir <subdir>` to resolve the output directory, and invokes the real tool with output flags pinned to that directory. Per-tool details:
+
+| Wrapper | Real binary path | Engagement subdir | Output mechanism |
+|---|---|---|---|
+| [canvass](wrappers/canvass) | `~/tools/pytools_venv/bin/python3 ~/tools/canvass/brief.py` | `recon/` | Forces `--output-dir <dir>`; also wipes `~/.bbot/scans/` before run to prevent cross-target cache contamination |
+| [trufflehog](wrappers/trufflehog) | `~/go/bin/trufflehog` | `trufflehog/` | Forces `--json` and pipes stdout via `tee` to `trufflehog_<timestamp>.json`; uses `${PIPESTATUS[0]}` for exit code |
+| [cloud-enum](wrappers/cloud-enum) | `~/tools/pytools_venv/bin/python3 ~/tools/cloud_enum/cloud_enum.py` | `cloud/` | Forces `-l <file>` to `cloud_enum_<timestamp>.txt` |
+| [roadtools](wrappers/roadtools) | `~/tools/pytools_venv/bin/roadrecon` / `roadtx` | `roadtools/` | Routes `roadrecon gather` with `-d <run_dir>/roadrecon.db`; `roadtx` runs inside `<run_dir>/` |
+| [s3scanner](wrappers/s3scanner) | `~/go/bin/s3scanner` | `s3scanner/` | Forces `-json`, pipes stdout via `tee` to `s3scanner_<timestamp>.json` |
+| [nmap](wrappers/nmap) | `/usr/bin/nmap` | `nmap/` | Forces `-oA <basename>` (writes `.nmap`, `.xml`, `.gnmap`) |
+| [httpx](wrappers/httpx) | `~/go/bin/httpx` | `httpx/` | Forces `-json -o <file>` to `httpx_<timestamp>.json` |
+| [gowitness](wrappers/gowitness) | `~/go/bin/gowitness` | `gowitness/` | Forces `--screenshot-path <dir>/screenshots/` and `--db-path <dir>/gowitness.sqlite3` |
+| [teamfiltration](wrappers/teamfiltration) | `~/tools/TeamFiltration/…/net9.0/linux-x64/publish/TeamFiltration` | `spray/` | Forces `--outpath <dir>` |
+| [dig](wrappers/dig) | `/usr/bin/dig` | `dns/` | Pipes stdout via `tee` to `dig_<timestamp>.txt` |
+| [ffuf](wrappers/ffuf) | `~/go/bin/ffuf` | `ffuf/` | Forces `-o <file> -of json` to `ffuf_<timestamp>.json` |
+
+**Conflicting-flag handling:** every wrapper that forces an output flag also strips that flag (and its value) from `"$@"` before invocation, so operator-supplied overrides don't conflict.
+
+**Absolute paths:** every wrapper invokes the real binary by absolute path rather than by name, so `~/bin/<tool>` (the wrapper itself) never recursively resolves back to itself when the wrapper is first in `$PATH`.
 
 ## 10. Error Cases
 
@@ -1113,7 +549,6 @@ All wrappers share these common error conditions via `lib/engagement.sh`:
 
 | Condition | Message | Exit Code |
 |---|---|---|
-| Run as root | `error: do not run install.sh as root. run as your operator user.` | 1 |
 | `apt` not found | `error: apt not found. repkit requires a Debian-based system.` | 1 |
 | `git` not found | `error: git is required.` | 1 |
 | `python3` not found | `error: python3 is required.` | 1 |
@@ -1192,18 +627,21 @@ rpt run -t <type> -p <phase>
 | Flag | Required | Values | Description |
 |---|---|---|---|
 | `-t` / `--type` | Yes | `ext` (more in future) | Engagement type. Determines output subfolder. |
-| `-p` / `--phase` | Yes | `recon`, `cloud`, `scanning`, `spray`, `dns`, `web` | Phase to run. Determines which tools execute. |
+| `-p` / `--phase` | Yes | `recon`, `cloud`, `scanning`, `dns`, `web` | Phase to run. Determines which tools execute. |
 
 ### 12.2 Phase → Tool Mapping
 
 | Phase | Tools (in order) |
 |---|---|
-| `recon` | canvass, trufflehog |
+| `recon` | canvass |
 | `cloud` | cloud_enum, roadtools, s3scanner |
 | `scanning` | nmap, httpx, gowitness |
-| `spray` | teamfiltration |
 | `dns` | dig |
 | `web` | ffuf |
+
+**Not in any phase** (run manually — they need specific input that isn't safe to auto-prompt):
+- `trufflehog` — requires a source (git repo / filesystem / s3 bucket)
+- `teamfiltration` — authentication attacks; too dangerous to mass-run via orchestration
 
 ### 12.3 How It Works
 
@@ -1225,17 +663,15 @@ Each tool prompts for only the variables it cannot infer from context. The activ
 
 | Tool | Prompted Variables |
 |---|---|
-| canvass | _(none — target domain is sufficient)_ |
-| trufflehog | `Source type` (git/filesystem/s3/etc.), `Source target` (repo URL or path) |
-| cloud_enum | `Keywords` (comma-separated company names/keywords for cloud enum) |
-| roadtools | `Auth method` (device code / password / token), `Username` (if password auth) |
-| s3scanner | `Keywords` (comma-separated terms to enumerate as bucket names) |
-| nmap | `Target` (IP, CIDR, or hostname), `Scan type` (quick/full/udp — maps to nmap flag presets) |
-| httpx | `Input file` (path to hosts/URLs list) or `Target` (single host) |
-| gowitness | `Input file` (path to URLs list) or `Target URL` (single URL) |
-| teamfiltration | `Domain`, `Users file` (path), `Password` |
-| dig | `Domain`, `Record type` (A/MX/TXT/NS/ALL), `DNS server` (optional, default: system) |
-| ffuf | `Target URL` (with FUZZ placeholder), `Wordlist` (path) |
+| canvass | `domain` (target) |
+| cloud_enum | `keywords` (comma-separated, e.g. `example,examplecorp`) |
+| roadtools | `auth method` (devicecode/password/token) |
+| s3scanner | `input` (bucket names file path or single keyword) |
+| nmap | `target` (IP, CIDR, or hostname), `scan type` (quick/full/udp/service) |
+| httpx | `input` (file path or single host) |
+| gowitness | `input` (file path or single URL) |
+| dig | `domain`, `record type` (A/MX/TXT/NS/ANY) |
+| ffuf | `url` (with FUZZ placeholder), `wordlist` (path) |
 
 ### 12.5 Scan Type Presets for nmap
 
