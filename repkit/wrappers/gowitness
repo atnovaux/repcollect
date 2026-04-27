@@ -8,17 +8,24 @@ mkdir -p "$OUTPUT_DIR/screenshots"
 
 ARGS=()
 skip_next=0
+skip_next_value=0
 for arg in "$@"; do
-    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+    if [[ $skip_next_value -eq 1 ]]; then skip_next_value=0; continue; fi
     case "$arg" in
-        --screenshot-path|--destination|--db-path) skip_next=1; continue ;;
+        --screenshot-path|--destination|--db-path|--write-db-uri|-s)
+            skip_next_value=1; continue ;;
+        --write-db|--write-jsonl|--write-csv|--write-screenshots)
+            continue ;;
     esac
     ARGS+=("$arg")
 done
 
 echo "[repkit] gowitness output -> $OUTPUT_DIR/" >&2
 "$HOME/go/bin/gowitness" \
+    "${ARGS[@]}" \
     --screenshot-path "$OUTPUT_DIR/screenshots/" \
-    --db-path "$OUTPUT_DIR/gowitness.sqlite3" \
-    "${ARGS[@]}"
+    --write-db \
+    --write-db-uri "sqlite://$OUTPUT_DIR/gowitness.sqlite3" \
+    --write-jsonl \
+    --write-jsonl-file "$OUTPUT_DIR/gowitness.jsonl"
 exit $?
