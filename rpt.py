@@ -257,7 +257,9 @@ def scan_for_tools(target_dir: Path, etype: str) -> tuple[list[DetectionResult],
             for match in subdir_path.glob(pattern):
                 if match.is_file() and not match.name.startswith("."):
                     size = match.stat().st_size
-                    dest = f"{mod.SUBDIR}/{match.name}"
+                    # Preserve any subdir hierarchy below mod.SUBDIR (e.g. gowitness/screenshots/foo.jpeg)
+                    rel = match.relative_to(subdir_path)
+                    dest = f"{mod.SUBDIR}/{rel}"
                     if size > MAX_FILE_BYTES:
                         skipped.append(SkippedFile(
                             path=str(match),
@@ -459,8 +461,12 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
                 break
 
         elif tool == "gowitness":
-            screenshots = list((subdir / "screenshots").glob("*.png")) if (subdir / "screenshots").is_dir() else []
-            out.append(f"- screenshots captured: **{len(screenshots)}**")
+            shot_dir = subdir / "screenshots"
+            shots = (
+                list(shot_dir.glob("*.jpeg")) + list(shot_dir.glob("*.jpg")) + list(shot_dir.glob("*.png"))
+                if shot_dir.is_dir() else []
+            )
+            out.append(f"- screenshots captured: **{len(shots)}**")
 
         elif tool == "dig":
             for t in subdir.glob("dig_*.txt"):
