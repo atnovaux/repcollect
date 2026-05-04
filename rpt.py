@@ -495,8 +495,10 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
             for gnmap in subdir.glob("*.gnmap"):
                 hosts = 0
                 open_ports: dict[str, list[str]] = {}
+                # gnmap format: "Host: <ip> (<name>)\tPorts: 22/open/tcp//ssh///, ...\tIgnored ..."
+                # Use \s+ to match tabs OR spaces between the labels.
                 for line in gnmap.read_text(errors="replace").splitlines():
-                    m = re.match(r"Host: (\S+) .* Ports: (.+?)\tIgnored", line)
+                    m = re.search(r"Host:\s+(\S+).*?Ports:\s+(.+?)(?:\t|$)", line)
                     if not m:
                         continue
                     host, ports_raw = m.group(1), m.group(2)
