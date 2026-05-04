@@ -612,15 +612,31 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
             for t in subdir.glob("nuclei_*.json"):
                 by_sev: dict[str, int] = {}
                 top: list[tuple[str, str, str]] = []  # (severity, template, host)
-                for line in t.open():
-                    line = line.strip()
-                    if not line:
+                # nuclei -je writes a JSON array; nuclei -j writes JSONL.
+                # Accept both: try whole-file parse first, fall back to line-by-line.
+                items: list = []
+                try:
+                    parsed = json.loads(t.read_text(errors="replace"))
+                    if isinstance(parsed, list):
+                        items = parsed
+                    elif isinstance(parsed, dict):
+                        items = [parsed]
+                except ValueError:
+                    for line in t.open():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(obj, dict):
+                            items.append(obj)
+                for obj in items:
+                    if not isinstance(obj, dict):
                         continue
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    sev = (obj.get("info", {}) or {}).get("severity", "info").lower()
+                    info = obj.get("info") if isinstance(obj.get("info"), dict) else {}
+                    sev = (info.get("severity") or "info").lower()
                     by_sev[sev] = by_sev.get(sev, 0) + 1
                     if sev in ("critical", "high"):
                         top.append((sev, obj.get("template-id", ""), obj.get("matched-at", "")))
