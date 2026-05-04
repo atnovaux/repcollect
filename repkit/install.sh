@@ -281,11 +281,11 @@ fi
 
 # Nuclei: fetch templates so the first run has something to scan with.
 if [[ -x "$HOME/go/bin/nuclei" ]]; then
-    echo "fetching nuclei templates (~/.local/nuclei-templates)..."
-    if "$HOME/go/bin/nuclei" -ut -duc 2>&1 | tail -3; then
+    echo "fetching nuclei templates (~/nuclei-templates/)..."
+    if "$HOME/go/bin/nuclei" -ut -duc; then
         ok "nuclei templates updated"
     else
-        warn "nuclei -ut failed — run manually before first scan"
+        warn "nuclei -ut failed — first nuclei run will retry automatically"
     fi
 fi
 

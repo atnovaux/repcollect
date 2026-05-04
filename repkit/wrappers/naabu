@@ -22,9 +22,14 @@ done
 
 scope_guard "${ARGS[@]}" || exit 1
 
-[[ -f "$RESUME_FILE" ]] && echo "[repkit] resuming from previous naabu run" >&2
+RESUME_ARGS=()
+if [[ -f "$RESUME_FILE" ]]; then
+    echo "[repkit] resuming from previous naabu run" >&2
+    RESUME_ARGS=(-resume "$RESUME_FILE")
+fi
+
 echo "[repkit] naabu output -> $OUTFILE" >&2
-"$HOME/go/bin/naabu" "${NAABU_DEFAULTS[@]}" -resume "$RESUME_FILE" -json -o "$OUTFILE" "${ARGS[@]}"
+"$HOME/go/bin/naabu" "${NAABU_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
 rc=$?
 [[ $rc -eq 0 ]] && rm -f "$RESUME_FILE"
 exit $rc

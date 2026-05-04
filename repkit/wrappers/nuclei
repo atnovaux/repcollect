@@ -27,9 +27,24 @@ done
 
 scope_guard "${ARGS[@]}" || exit 1
 
-[[ -f "$RESUME_FILE" ]] && echo "[repkit] resuming from previous nuclei run" >&2
+# Self-heal: if templates dir is missing, fetch them now.
+TEMPLATE_DIR="$HOME/nuclei-templates"
+if [[ ! -d "$TEMPLATE_DIR" || -z "$(ls -A "$TEMPLATE_DIR" 2>/dev/null)" ]]; then
+    echo "[repkit] nuclei templates missing — fetching with -ut (one-time, ~3 min)" >&2
+    "$HOME/go/bin/nuclei" -ut -duc || {
+        echo "error: nuclei -ut failed. run 'nuclei -ut' manually." >&2
+        exit 1
+    }
+fi
+
+RESUME_ARGS=()
+if [[ -f "$RESUME_FILE" ]]; then
+    echo "[repkit] resuming from previous nuclei run" >&2
+    RESUME_ARGS=(-resume "$RESUME_FILE")
+fi
+
 echo "[repkit] nuclei output -> $OUTFILE" >&2
-"$HOME/go/bin/nuclei" "${NUCLEI_DEFAULTS[@]}" -resume "$RESUME_FILE" -je "$OUTFILE" "${ARGS[@]}"
+"$HOME/go/bin/nuclei" "${NUCLEI_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -je "$OUTFILE" "${ARGS[@]}"
 rc=$?
 [[ $rc -eq 0 ]] && rm -f "$RESUME_FILE"
 exit $rc

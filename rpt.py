@@ -169,8 +169,11 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
       ffuf wordlist     ← first existing FFUF_DEFAULT_WORDLISTS entry
     """
     base = get_engagement_base() / target
-    scope = base / "scope.txt"
-    has_scope = scope.is_file() and scope.stat().st_size > 0
+
+    def _scope_clean() -> str | None:
+        """Returns a path to a comment-stripped scope.txt, or None."""
+        cs = clean_scope_path(target)
+        return str(cs) if cs else None
 
     def _newest(glob_path: Path, pattern: str) -> Path | None:
         if not glob_path.is_dir():
@@ -178,8 +181,10 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
         matches = sorted(glob_path.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         return matches[0] if matches else None
 
-    if tool == "nmap" and key == "target" and has_scope:
-        return str(scope)
+    if tool == "nmap" and key == "target":
+        s = _scope_clean()
+        if s:
+            return s
     if tool == "nmap" and key == "scan_type":
         return "quick"
     if tool == "dig" and key == "record_type":
@@ -192,16 +197,14 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
             agg = aggregate_subdomains(target, etype)
             if agg:
                 return str(agg)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     # naabu: dnsx live hosts → scope.txt
     if tool == "naabu" and key == "target":
         live_hosts = aggregate_dnsx_hosts(target, etype)
         if live_hosts:
             return str(live_hosts)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     if tool == "httpx" and key == "input":
         # If canvass ran for multiple domains, aggregate their subdomain lists.
@@ -218,23 +221,20 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
         live_hosts = aggregate_dnsx_hosts(target, etype)
         if live_hosts:
             return str(live_hosts)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     if tool == "gowitness" and key == "input":
         urls = _newest(base / etype / "httpx", "*_urls.txt")
         if urls:
             return str(urls)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     # urlfinder + katana: same chain as gowitness — feed httpx URL list.
     if tool in ("urlfinder", "katana") and key == "input":
         urls = _newest(base / etype / "httpx", "*_urls.txt")
         if urls:
             return str(urls)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     # nuclei: aggregate of phase-5 URL discovery + httpx live URLs.
     if tool == "nuclei" and key == "input":
@@ -244,8 +244,7 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
         urls = _newest(base / etype / "httpx", "*_urls.txt")
         if urls:
             return str(urls)
-        if has_scope:
-            return str(scope)
+        return _scope_clean()
 
     # Prefer domains.txt[0] → canvass-prompted domain → engagement name.
     domains_list = read_domains(target)
@@ -872,6 +871,25 @@ def _aggregates_dir(target: str) -> Path:
     return d
 
 
+def clean_scope_path(target: str) -> Path | None:
+    """Produce a comment-free copy of scope.txt at .aggregates/scope_clean.txt.
+    Tools like dnsx/naabu/urlfinder don't strip '#' lines, so we hand them a
+    pre-cleaned file. Returns None if scope.txt is missing or empty after strip.
+    """
+    src = get_engagement_base() / target / "scope.txt"
+    if not src.is_file():
+        return None
+    clean_lines = [
+        l.strip() for l in src.read_text(errors="replace").splitlines()
+        if l.strip() and not l.strip().startswith("#")
+    ]
+    if not clean_lines:
+        return None
+    out = _aggregates_dir(target) / "scope_clean.txt"
+    out.write_text("\n".join(clean_lines) + "\n")
+    return out
+
+
 def aggregate_subdomains(target: str, etype: str) -> Path | None:
     """Concat + dedupe every <recon>/*_subdomains.txt into one file.
     Returns the aggregate path, or None if no subdomain files exist."""
@@ -887,7 +905,9 @@ def aggregate_subdomains(target: str, etype: str) -> Path | None:
         for f in files:
             for line in f.read_text(errors="replace").splitlines():
                 host = line.strip()
-                if host and host not in seen:
+                if not host or host.startswith("#"):
+                    continue
+                if host not in seen:
                     seen.add(host)
                     w.write(host + "\n")
     return out
@@ -917,7 +937,13 @@ def aggregate_dnsx_hosts(target: str, etype: str) -> Path | None:
             except ValueError:
                 continue
             host = obj.get("host")
-            if host and host not in seen:
+            if not host or host.startswith("#"):
+                continue
+            # Skip NXDOMAIN entries — only emit hosts that actually resolved.
+            status = obj.get("status_code") or obj.get("status_code_raw")
+            if status in ("NXDOMAIN", 3):
+                continue
+            if host not in seen:
                 seen.add(host)
                 w.write(host + "\n")
     return out if seen else None
@@ -1013,6 +1039,18 @@ def cmd_domains(args) -> int:
         "# example.io\n"
     )
     return _open_in_editor(domains_path_for(target), template)
+
+
+def cmd_update(args) -> int:
+    """Re-run repkit/install.sh — upgrades every Go tool to @latest, pulls
+    latest for git clones, refreshes pip packages, re-fetches nuclei templates.
+    """
+    install_sh = Path(__file__).resolve().parent / "repkit" / "install.sh"
+    if not install_sh.is_file():
+        print(f"error: install script not found at {install_sh}", file=sys.stderr)
+        return 1
+    print("[+] running repkit/install.sh to refresh all tools...")
+    return subprocess.run(["bash", str(install_sh)]).returncode
 
 
 def cmd_notes(args) -> int:
@@ -1485,6 +1523,7 @@ def main() -> int:
     subparsers.add_parser("scope", help="edit scope.txt for the active engagement ($EDITOR / nano / vi)")
     subparsers.add_parser("domains", help="edit domains.txt (root domains canvass iterates over)")
     subparsers.add_parser("notes", help="edit notes.md for the active engagement")
+    subparsers.add_parser("update", help="upgrade every installed tool to its latest version")
 
     run_p = subparsers.add_parser("run", help="run tools for a phase")
     run_p.add_argument("-t", required=True, dest="etype", metavar="TYPE",
@@ -1512,6 +1551,7 @@ def main() -> int:
         "scope": cmd_scope,
         "domains": cmd_domains,
         "notes": cmd_notes,
+        "update": cmd_update,
         "run": cmd_run,
         "collect": cmd_collect,
     }
