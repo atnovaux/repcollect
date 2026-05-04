@@ -19,7 +19,7 @@ WARN_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 VALID_TYPES = ["ext"]
 
 PHASES = {
-    "recon":    ["canvass", "uncover", "dnstwist"],
+    "recon":    ["canvass", "uncover", "dnstwist", "cloud-enum"],
     "dns":      ["dig", "dnsx"],
     "scanning": ["naabu", "nmap", "httpx", "gowitness"],
     "web":      ["urlfinder", "katana", "ffuf"],
@@ -27,7 +27,7 @@ PHASES = {
     # auto: full external pipeline. Phase 1 -> 7. Hands-off after upfront prompts.
     # Excludes auth-gated/source-specific tools (roadtools, teamfiltration,
     # trufflehog, s3scanner) — those stay manual.
-    "auto":     ["canvass", "uncover", "dnstwist",
+    "auto":     ["canvass", "uncover", "dnstwist", "cloud-enum",
                  "dnsx",
                  "naabu", "nmap",
                  "httpx", "gowitness",
@@ -46,6 +46,7 @@ FFUF_DEFAULT_WORDLISTS = [
 
 TOOL_PROMPTS = {
     "canvass":        [("root domain (e.g. example.com)", "domain")],
+    "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp,example-prod)", "keywords")],
     "uncover":        [("query (e.g. ssl:\"example\" or org:\"Example Corp\")", "query")],
     "dnstwist":       [("domain to permute", "domain")],
     "dnsx":           [("input (subdomains list file or single host) — Enter to auto-chain", "input")],
@@ -109,7 +110,7 @@ ENGAGEMENT_FILE = Path.home() / ".engagement"
 
 TOOL_SUBDIRS = [
     "recon", "uncover", "dnstwist", "trufflehog",
-    "roadtools", "s3scanner",
+    "cloud", "roadtools", "s3scanner",
     "dns", "dnsx",
     "naabu", "nmap", "httpx", "gowitness",
     "urlfinder", "katana", "ffuf",
@@ -119,6 +120,7 @@ TOOL_SUBDIRS = [
 
 TOOL_SUBDIR_MAP = {
     "canvass":        "recon",
+    "cloud-enum":     "cloud",
     "uncover":        "uncover",
     "dnstwist":       "dnstwist",
     "trufflehog":     "trufflehog",
@@ -566,6 +568,19 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
                 out.append(f"- secrets — verified: **{verified}**, unverified: **{unverified}**")
                 break
 
+        elif tool == "cloud_enum":
+            for t in subdir.glob("cloud_enum_*.txt"):
+                hits = [
+                    l.strip() for l in t.read_text(errors="replace").splitlines()
+                    if "OPEN" in l or "HTTP-OK" in l or "[+]" in l
+                ]
+                out.append(f"- cloud assets discovered: **{len(hits)}**")
+                for h in hits[:10]:
+                    out.append(f"  - {h}")
+                if len(hits) > 10:
+                    out.append(f"  - …and {len(hits)-10} more")
+                break
+
         elif tool == "s3scanner":
             for t in subdir.glob("s3scanner_*.json"):
                 hits = 0
@@ -753,6 +768,8 @@ def create_bundle(target: str, date_stamp: str, etype: str,
 def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     if tool == "canvass":
         return [prompted["domain"]]
+    elif tool == "cloud-enum":
+        return ["-k", prompted["keywords"]]
     elif tool == "uncover":
         return ["-q", prompted["query"]]
     elif tool == "dnstwist":
@@ -890,14 +907,70 @@ def clean_scope_path(target: str) -> Path | None:
     return out
 
 
+def _canvass_cloud_hosts(target: str, etype: str) -> set[str]:
+    """Extract hostnames from canvass cloud-raw.json so cloud-discovered
+    Azure Blob/Files/SharePoint/etc. endpoints flow through the chain
+    (dnsx → httpx → nuclei) instead of just sitting as findings."""
+    import json as _json
+    cloud_json = get_engagement_base() / target / etype / "recon" / "cloud-raw.json"
+    if not cloud_json.is_file():
+        return set()
+    try:
+        data = _json.loads(cloud_json.read_text(errors="replace"))
+    except (ValueError, OSError):
+        return set()
+
+    hosts: set[str] = set()
+
+    def _harvest(obj):
+        """Walk arbitrary canvass JSON shapes pulling out any hostname-like values."""
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, str) and k in ("hostname", "host", "target", "fqdn", "domain", "url"):
+                    h = v.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+                    if "." in h and not h.startswith("#"):
+                        hosts.add(h)
+                else:
+                    _harvest(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _harvest(item)
+
+    _harvest(data)
+    return hosts
+
+
+def _cloud_enum_hosts(target: str, etype: str) -> set[str]:
+    """Extract hostnames from cloud_enum text output (lines starting with
+    e.g. '[+] OPEN: https://foo.s3.amazonaws.com/' or '[!] HTTP-OK: ...')."""
+    import re as _re
+    cloud_dir = get_engagement_base() / target / etype / "cloud"
+    if not cloud_dir.is_dir():
+        return set()
+    hosts: set[str] = set()
+    url_re = _re.compile(r"https?://([a-zA-Z0-9_.-]+)")
+    bare_re = _re.compile(r"\b([a-zA-Z0-9_-]+\.(?:s3|blob|file|queue|table|storage|appspot|web)\.[a-zA-Z0-9_.-]+)\b")
+    for f in cloud_dir.glob("cloud_enum_*.txt"):
+        for line in f.read_text(errors="replace").splitlines():
+            for m in url_re.findall(line):
+                hosts.add(m.split(":", 1)[0])
+            for m in bare_re.findall(line):
+                hosts.add(m)
+    # Strip trailing slashes / paths defensively
+    return {h.rstrip("/") for h in hosts if "." in h}
+
+
 def aggregate_subdomains(target: str, etype: str) -> Path | None:
-    """Concat + dedupe every <recon>/*_subdomains.txt into one file.
-    Returns the aggregate path, or None if no subdomain files exist."""
+    """Concat + dedupe every <recon>/*_subdomains.txt PLUS canvass-discovered
+    cloud hostnames PLUS cloud_enum-discovered cloud hostnames into one file.
+    Returns the aggregate path, or None if nothing to aggregate.
+    """
     recon = get_engagement_base() / target / etype / "recon"
     if not recon.is_dir():
         return None
     files = sorted(recon.glob("*_subdomains.txt"))
-    if not files:
+    cloud_hosts = _canvass_cloud_hosts(target, etype) | _cloud_enum_hosts(target, etype)
+    if not files and not cloud_hosts:
         return None
     out = _aggregates_dir(target) / f"{etype}_subdomains.txt"
     seen: set[str] = set()
@@ -910,6 +983,10 @@ def aggregate_subdomains(target: str, etype: str) -> Path | None:
                 if host not in seen:
                     seen.add(host)
                     w.write(host + "\n")
+        for host in sorted(cloud_hosts):
+            if host not in seen:
+                seen.add(host)
+                w.write(host + "\n")
     return out
 
 
