@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# repkit wrapper for uncover (Shodan/Censys/FOFA/Hunter/Quake asset discovery)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/../lib/engagement.sh"
+source "$SCRIPT_DIR/../tool_defaults.conf"
+
+OUTPUT_DIR=$(ensure_engagement_dir uncover) || exit 1
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTFILE="$OUTPUT_DIR/uncover_${TIMESTAMP}.json"
+
+ARGS=()
+skip_next=0
+for arg in "$@"; do
+    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+    case "$arg" in
+        -o|-output) skip_next=1; continue ;;
+    esac
+    ARGS+=("$arg")
+done
+
+# uncover queries third-party APIs (no direct target traffic) — no scope_guard.
+echo "[repkit] uncover output -> $OUTFILE" >&2
+"$HOME/go/bin/uncover" "${UNCOVER_DEFAULTS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
+exit $?

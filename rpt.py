@@ -19,17 +19,25 @@ WARN_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 VALID_TYPES = ["ext"]
 
 PHASES = {
-    "recon":    ["canvass"],
-    "cloud":    ["cloud-enum", "roadtools", "s3scanner"],
-    "scanning": ["nmap", "httpx", "gowitness"],
-    "dns":      ["dig"],
-    "web":      ["ffuf"],
-    # auto: OSINT + probing + scanning pipeline, minimal prompting.
-    # Each tool's input defaults to the previous tool's output where possible.
-    # Excludes auth-gated tools (roadtools, teamfiltration) and source-specific
-    # tools (trufflehog, s3scanner) — those stay manual.
-    "auto":     ["canvass", "nmap", "httpx", "gowitness", "cloud-enum", "ffuf"],
+    "recon":    ["canvass", "uncover", "dnstwist"],
+    "dns":      ["dig", "dnsx"],
+    "scanning": ["naabu", "nmap", "httpx", "gowitness"],
+    "web":      ["urlfinder", "katana", "ffuf"],
+    "vuln":     ["nuclei"],
+    # auto: full external pipeline. Phase 1 -> 7. Hands-off after upfront prompts.
+    # Excludes auth-gated/source-specific tools (roadtools, teamfiltration,
+    # trufflehog, s3scanner) — those stay manual.
+    "auto":     ["canvass", "uncover", "dnstwist",
+                 "dnsx",
+                 "naabu", "nmap",
+                 "httpx", "gowitness",
+                 "urlfinder", "katana", "ffuf",
+                 "nuclei"],
 }
+
+# Tools that hard-stop the auto chain on failure — downstream literally can't
+# function without their output.
+CRITICAL_TOOLS = {"canvass", "dnsx", "httpx"}
 
 FFUF_DEFAULT_WORDLISTS = [
     "/usr/share/seclists/Discovery/Web-Content/common.txt",
@@ -38,17 +46,23 @@ FFUF_DEFAULT_WORDLISTS = [
 
 TOOL_PROMPTS = {
     "canvass":        [("root domain (e.g. example.com)", "domain")],
-    "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp)", "keywords")],
-    "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
-    "s3scanner":      [("bucket names file path OR single bucket keyword", "input")],
+    "uncover":        [("query (e.g. ssl:\"example\" or org:\"Example Corp\")", "query")],
+    "dnstwist":       [("domain to permute", "domain")],
+    "dnsx":           [("input (subdomains list file or single host) — Enter to auto-chain", "input")],
+    "naabu":          [("target (scope file or single IP/CIDR) — Enter to auto-chain", "target")],
     "nmap":           [("target (scope file path preferred, or single IP/CIDR/hostname)", "target"),
                        ("scan type (quick/full/udp/service)", "scan_type")],
-    "httpx":          [("host list file (from canvass subdomains) — press Enter to auto-chain", "input")],
-    "gowitness":      [("URL list file (from httpx) — press Enter to auto-chain", "input")],
+    "httpx":          [("host list file (from canvass subdomains) — Enter to auto-chain", "input")],
+    "gowitness":      [("URL list file (from httpx) — Enter to auto-chain", "input")],
+    "urlfinder":      [("input (URL list or single URL) — Enter to auto-chain", "input")],
+    "katana":         [("input (URL list or single URL) — Enter to auto-chain", "input")],
+    "nuclei":         [("input (URL list file or single URL) — Enter to auto-chain", "input")],
     "dig":            [("domain", "domain"),
                        ("record type (A/MX/TXT/NS/ANY)", "record_type")],
     "ffuf":           [("target URL (MUST include FUZZ placeholder, e.g. https://example.com/FUZZ)", "url"),
                        ("wordlist path", "wordlist")],
+    "roadtools":      [("auth method (devicecode/password/token)", "auth_method")],
+    "s3scanner":      [("bucket names file path OR single bucket keyword", "input")],
 }
 
 NMAP_PRESETS = {
@@ -94,22 +108,33 @@ def get_engagement_base() -> Path:
 ENGAGEMENT_FILE = Path.home() / ".engagement"
 
 TOOL_SUBDIRS = [
-    "recon", "trufflehog", "cloud", "roadtools", "s3scanner",
-    "nmap", "httpx", "gowitness", "spray", "dns", "ffuf",
+    "recon", "uncover", "dnstwist", "trufflehog",
+    "roadtools", "s3scanner",
+    "dns", "dnsx",
+    "naabu", "nmap", "httpx", "gowitness",
+    "urlfinder", "katana", "ffuf",
+    "nuclei",
+    "spray",
 ]
 
 TOOL_SUBDIR_MAP = {
     "canvass":        "recon",
+    "uncover":        "uncover",
+    "dnstwist":       "dnstwist",
     "trufflehog":     "trufflehog",
-    "cloud-enum":     "cloud",
     "roadtools":      "roadtools",
     "s3scanner":      "s3scanner",
+    "dig":            "dns",
+    "dnsx":           "dnsx",
+    "naabu":          "naabu",
     "nmap":           "nmap",
     "httpx":          "httpx",
     "gowitness":      "gowitness",
-    "teamfiltration": "spray",
-    "dig":            "dns",
+    "urlfinder":      "urlfinder",
+    "katana":         "katana",
     "ffuf":           "ffuf",
+    "nuclei":         "nuclei",
+    "teamfiltration": "spray",
 }
 
 
@@ -129,14 +154,19 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
                    context: dict | None = None) -> str | None:
     """Return a pre-filled default for a given tool prompt, if one applies.
 
-    Chains tool outputs together:
-      - httpx input     → newest <recon>/*_subdomains.txt (from canvass), else scope.txt
-      - gowitness input → newest <httpx>/*_urls.txt, else scope.txt
-      - nmap target     → scope.txt if present
-      - nmap scan_type  → "quick"
-      - dig record_type → "A"
-      - ffuf url        → https://<target>/FUZZ
-      - ffuf wordlist   → first of FFUF_DEFAULT_WORDLISTS that exists
+    Chain map for the auto pipeline:
+      dnsx input        ← canvass+uncover subdomain union (or scope.txt)
+      naabu target      ← dnsx live hosts (or scope.txt)
+      httpx input       ← canvass subdomains aggregate (or dnsx live hosts, or scope.txt)
+      gowitness input   ← httpx urls.txt
+      urlfinder input   ← httpx urls.txt
+      katana input      ← httpx urls.txt
+      nuclei input      ← phase-5 URL union (urlfinder + katana + ffuf + httpx)
+      nmap target       ← scope.txt
+      nmap scan_type    ← "quick"
+      dig record_type   ← "A"
+      ffuf url          ← https://<primary>/FUZZ  (primary = domains.txt[0] | canvass.domain | target)
+      ffuf wordlist     ← first existing FFUF_DEFAULT_WORDLISTS entry
     """
     base = get_engagement_base() / target
     scope = base / "scope.txt"
@@ -155,6 +185,24 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
     if tool == "dig" and key == "record_type":
         return "A"
 
+    # dnsx: union of canvass subdomain lists (multi-domain aggregate) → scope.txt
+    if tool == "dnsx" and key == "input":
+        recon = base / etype / "recon"
+        if recon.is_dir() and list(recon.glob("*_subdomains.txt")):
+            agg = aggregate_subdomains(target, etype)
+            if agg:
+                return str(agg)
+        if has_scope:
+            return str(scope)
+
+    # naabu: dnsx live hosts → scope.txt
+    if tool == "naabu" and key == "target":
+        live_hosts = aggregate_dnsx_hosts(target, etype)
+        if live_hosts:
+            return str(live_hosts)
+        if has_scope:
+            return str(scope)
+
     if tool == "httpx" and key == "input":
         # If canvass ran for multiple domains, aggregate their subdomain lists.
         recon = base / etype / "recon"
@@ -166,10 +214,33 @@ def prompt_default(tool: str, key: str, target: str, etype: str = "ext",
                     return str(agg)
             elif len(subs_files) == 1:
                 return str(subs_files[0])
+        # Fallback: dnsx live host list
+        live_hosts = aggregate_dnsx_hosts(target, etype)
+        if live_hosts:
+            return str(live_hosts)
         if has_scope:
             return str(scope)
 
     if tool == "gowitness" and key == "input":
+        urls = _newest(base / etype / "httpx", "*_urls.txt")
+        if urls:
+            return str(urls)
+        if has_scope:
+            return str(scope)
+
+    # urlfinder + katana: same chain as gowitness — feed httpx URL list.
+    if tool in ("urlfinder", "katana") and key == "input":
+        urls = _newest(base / etype / "httpx", "*_urls.txt")
+        if urls:
+            return str(urls)
+        if has_scope:
+            return str(scope)
+
+    # nuclei: aggregate of phase-5 URL discovery + httpx live URLs.
+    if tool == "nuclei" and key == "input":
+        agg = aggregate_phase5_urls(target, etype)
+        if agg:
+            return str(agg)
         urls = _newest(base / etype / "httpx", "*_urls.txt")
         if urls:
             return str(urls)
@@ -496,16 +567,6 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
                 out.append(f"- secrets — verified: **{verified}**, unverified: **{unverified}**")
                 break
 
-        elif tool == "cloud_enum":
-            for t in subdir.glob("cloud_enum_*.txt"):
-                hits = [l.strip() for l in t.read_text(errors="replace").splitlines() if "OPEN" in l or "ACCESS" in l]
-                out.append(f"- cloud resources of note: **{len(hits)}**")
-                for h in hits[:10]:
-                    out.append(f"  - {h}")
-                if len(hits) > 10:
-                    out.append(f"  - …and {len(hits)-10} more")
-                break
-
         elif tool == "s3scanner":
             for t in subdir.glob("s3scanner_*.json"):
                 hits = 0
@@ -532,6 +593,98 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
                 if len(results) > 10:
                     out.append(f"  - …and {len(results)-10} more")
                 break
+
+        elif tool == "nuclei":
+            for t in subdir.glob("nuclei_*.json"):
+                by_sev: dict[str, int] = {}
+                top: list[tuple[str, str, str]] = []  # (severity, template, host)
+                for line in t.open():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    sev = (obj.get("info", {}) or {}).get("severity", "info").lower()
+                    by_sev[sev] = by_sev.get(sev, 0) + 1
+                    if sev in ("critical", "high"):
+                        top.append((sev, obj.get("template-id", ""), obj.get("matched-at", "")))
+                total = sum(by_sev.values())
+                out.append(f"- findings: **{total}** total — " + ", ".join(
+                    f"{k}: {by_sev[k]}" for k in ("critical", "high", "medium", "low", "info") if k in by_sev
+                ))
+                for sev, tpl, host in top[:10]:
+                    out.append(f"  - [{sev.upper()}] `{tpl}` @ {host}")
+                if len(top) > 10:
+                    out.append(f"  - …and {len(top)-10} more critical/high")
+                break
+
+        elif tool == "naabu":
+            for t in subdir.glob("naabu_*.json"):
+                hosts: dict[str, list[int]] = {}
+                for line in t.open():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    h, p = obj.get("host") or obj.get("ip"), obj.get("port")
+                    if h and p:
+                        hosts.setdefault(h, []).append(p)
+                total_ports = sum(len(v) for v in hosts.values())
+                out.append(f"- hosts with open ports: **{len(hosts)}**, total open ports: **{total_ports}**")
+                for h, ports in list(hosts.items())[:10]:
+                    out.append(f"  - `{h}`: {', '.join(map(str, sorted(set(ports))))}")
+                if len(hosts) > 10:
+                    out.append(f"  - …and {len(hosts)-10} more")
+                break
+
+        elif tool == "katana":
+            for t in subdir.glob("katana_*.jsonl"):
+                count = sum(1 for line in t.open() if line.strip())
+                out.append(f"- endpoints crawled: **{count}**")
+                break
+
+        elif tool == "urlfinder":
+            for t in subdir.glob("urlfinder_*.txt"):
+                count = sum(1 for line in t.open() if line.strip())
+                out.append(f"- archive URLs surfaced: **{count}**")
+                break
+
+        elif tool == "dnsx":
+            for t in subdir.glob("dnsx_*.json"):
+                hosts = 0
+                for line in t.open():
+                    line = line.strip()
+                    if line:
+                        hosts += 1
+                out.append(f"- hosts resolved: **{hosts}**")
+                break
+
+        elif tool == "uncover":
+            for t in subdir.glob("uncover_*.json"):
+                hits = sum(1 for line in t.open() if line.strip())
+                out.append(f"- assets surfaced: **{hits}**")
+                break
+
+        elif tool == "dnstwist":
+            registered = 0
+            files = 0
+            for t in subdir.glob("dnstwist_*_*.json"):
+                files += 1
+                try:
+                    data = json.loads(t.read_text(errors="replace"))
+                except ValueError:
+                    continue
+                # dnstwist json: list of permutation dicts; "dns_a" key => registered
+                if isinstance(data, list):
+                    for item in data:
+                        if item.get("dns_a") or item.get("dns_aaaa") or item.get("dns_mx"):
+                            registered += 1
+            out.append(f"- domains permuted across **{files}** root(s); **{registered}** typosquats currently resolve")
 
     except (OSError, ValueError):
         return []
@@ -601,8 +754,17 @@ def create_bundle(target: str, date_stamp: str, etype: str,
 def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     if tool == "canvass":
         return [prompted["domain"]]
-    elif tool == "cloud-enum":
-        return ["-k", prompted["keywords"]]
+    elif tool == "uncover":
+        return ["-q", prompted["query"]]
+    elif tool == "dnstwist":
+        return [prompted["domain"]]
+    elif tool == "dnsx":
+        inp = prompted["input"]
+        # dnsx can take -l <file> for list or -d <domain> for single host.
+        return ["-l", inp] if Path(inp).is_file() else ["-d", inp]
+    elif tool == "naabu":
+        tgt = prompted["target"]
+        return ["-list", tgt] if Path(tgt).is_file() else ["-host", tgt]
     elif tool == "roadtools":
         return ["roadrecon", "gather", f"--{prompted['auth_method']}"]
     elif tool == "s3scanner":
@@ -620,6 +782,15 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     elif tool == "gowitness":
         inp = prompted["input"]
         return ["scan", "file", "-f", inp] if Path(inp).exists() else ["scan", "single", "-u", inp]
+    elif tool == "urlfinder":
+        inp = prompted["input"]
+        return ["-list", inp] if Path(inp).is_file() else ["-d", inp]
+    elif tool == "katana":
+        inp = prompted["input"]
+        return ["-list", inp] if Path(inp).is_file() else ["-u", inp]
+    elif tool == "nuclei":
+        inp = prompted["input"]
+        return ["-l", inp] if Path(inp).is_file() else ["-u", inp]
     elif tool == "dig":
         record = prompted["record_type"]
         return [prompted["domain"], record]
@@ -662,25 +833,55 @@ def _canvass_brief_for(target: str, etype: str, domain: str) -> Path | None:
     return None
 
 
+def _dnstwist_output_for(target: str, etype: str, domain: str) -> Path | None:
+    """Return the latest dnstwist json for a specific domain, or None if absent."""
+    dt_dir = get_engagement_base() / target / etype / "dnstwist"
+    if not dt_dir.is_dir():
+        return None
+    safe = domain.replace(".", "_")
+    matches = list(dt_dir.glob(f"dnstwist_{safe}_*.json"))
+    return matches[0] if matches else None
+
+
+# Tools that iterate per-domain rather than aggregate.
+PER_DOMAIN_TOOLS = {
+    "canvass":  _canvass_brief_for,
+    "dnstwist": _dnstwist_output_for,
+}
+
+
+def missing_domains_for(tool: str, target: str, etype: str) -> list[str]:
+    """For a per-domain tool, the subset of domains.txt entries that don't yet
+    have output for that tool."""
+    fn = PER_DOMAIN_TOOLS.get(tool)
+    if fn is None:
+        return []
+    return [d for d in read_domains(target) if fn(target, etype, d) is None]
+
+
 def canvass_missing_domains(target: str, etype: str) -> list[str]:
-    """Subset of domains.txt entries that don't yet have a canvass brief."""
-    return [d for d in read_domains(target) if _canvass_brief_for(target, etype, d) is None]
+    """Backward-compat wrapper around missing_domains_for('canvass', ...)."""
+    return missing_domains_for("canvass", target, etype)
+
+
+def _aggregates_dir(target: str) -> Path:
+    """~/engagements/<target>/.aggregates/ — chain inputs live here, outside ext/
+    so collectors don't sweep them into bundles."""
+    d = get_engagement_base() / target / ".aggregates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def aggregate_subdomains(target: str, etype: str) -> Path | None:
-    """Concat + dedupe every *_subdomains.txt in ext/recon/ into one file
-    under ~/engagements/<target>/.aggregates/ (outside ext/ so collectors ignore it).
-    Returns the aggregate path, or None if there are no subdomain files.
-    """
+    """Concat + dedupe every <recon>/*_subdomains.txt into one file.
+    Returns the aggregate path, or None if no subdomain files exist."""
     recon = get_engagement_base() / target / etype / "recon"
     if not recon.is_dir():
         return None
     files = sorted(recon.glob("*_subdomains.txt"))
     if not files:
         return None
-    agg_dir = get_engagement_base() / target / ".aggregates"
-    agg_dir.mkdir(parents=True, exist_ok=True)
-    out = agg_dir / f"{etype}_httpx_input.txt"
+    out = _aggregates_dir(target) / f"{etype}_subdomains.txt"
     seen: set[str] = set()
     with out.open("w") as w:
         for f in files:
@@ -689,6 +890,95 @@ def aggregate_subdomains(target: str, etype: str) -> Path | None:
                 if host and host not in seen:
                     seen.add(host)
                     w.write(host + "\n")
+    return out
+
+
+def aggregate_dnsx_hosts(target: str, etype: str) -> Path | None:
+    """Extract live hostnames + IPs from the newest dnsx_*.json output, dedupe.
+    dnsx writes JSONL with `host` and `a` (or other record) fields per line.
+    """
+    import json as _json
+    dnsx_dir = get_engagement_base() / target / etype / "dnsx"
+    if not dnsx_dir.is_dir():
+        return None
+    files = sorted(dnsx_dir.glob("dnsx_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return None
+    src = files[0]
+    out = _aggregates_dir(target) / f"{etype}_dnsx_hosts.txt"
+    seen: set[str] = set()
+    with out.open("w") as w:
+        for line in src.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = _json.loads(line)
+            except ValueError:
+                continue
+            host = obj.get("host")
+            if host and host not in seen:
+                seen.add(host)
+                w.write(host + "\n")
+    return out if seen else None
+
+
+def aggregate_phase5_urls(target: str, etype: str) -> Path | None:
+    """Concat + dedupe URLs from urlfinder/katana/ffuf/httpx outputs into one
+    URL-per-line file for nuclei input."""
+    import json as _json
+    base = get_engagement_base() / target / etype
+    out = _aggregates_dir(target) / f"{etype}_phase5_urls.txt"
+    seen: set[str] = set()
+
+    def _add(u: str) -> None:
+        u = (u or "").strip()
+        if u and u not in seen:
+            seen.add(u)
+
+    # urlfinder: plain text, one URL per line
+    uf_dir = base / "urlfinder"
+    if uf_dir.is_dir():
+        for f in uf_dir.glob("urlfinder_*.txt"):
+            for line in f.read_text(errors="replace").splitlines():
+                _add(line)
+
+    # katana: JSONL, "request.url" or top-level "url"
+    kt_dir = base / "katana"
+    if kt_dir.is_dir():
+        for f in kt_dir.glob("katana_*.jsonl"):
+            for line in f.read_text(errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = _json.loads(line)
+                except ValueError:
+                    continue
+                _add(obj.get("request", {}).get("endpoint") if isinstance(obj.get("request"), dict) else None)
+                _add(obj.get("url"))
+
+    # ffuf: single JSON with results[]
+    ff_dir = base / "ffuf"
+    if ff_dir.is_dir():
+        for f in ff_dir.glob("ffuf_*.json"):
+            try:
+                obj = _json.loads(f.read_text(errors="replace"))
+            except ValueError:
+                continue
+            for r in obj.get("results", []) or []:
+                _add(r.get("url"))
+
+    # httpx: JSONL, "url" field — included so nuclei has at least the live set
+    hx_dir = base / "httpx"
+    if hx_dir.is_dir():
+        for f in hx_dir.glob("httpx_*_urls.txt"):
+            for line in f.read_text(errors="replace").splitlines():
+                _add(line)
+
+    if not seen:
+        return None
+    out.write_text("\n".join(sorted(seen)) + "\n")
     return out
 
 
@@ -867,8 +1157,13 @@ def show_phase_status(phase: str, tools: list[str], target: str, etype: str) -> 
 CHAIN_MARKER = "__CHAIN__"
 
 CHAINABLE_INPUTS = {
-    ("httpx", "input"),      # chains from canvass subdomains
-    ("gowitness", "input"),  # chains from httpx urls
+    ("dnsx", "input"),         # from canvass+uncover subdomain union
+    ("naabu", "target"),       # from dnsx live IPs
+    ("httpx", "input"),        # from canvass subdomains (or dnsx live hosts)
+    ("gowitness", "input"),    # from httpx urls
+    ("urlfinder", "input"),    # from httpx urls
+    ("katana", "input"),       # from httpx urls
+    ("nuclei", "input"),       # from union of urlfinder/katana/ffuf/httpx
 }
 
 
@@ -888,15 +1183,15 @@ def gather_auto_inputs(tools: list[str], target: str, etype: str) -> dict | None
     for tool in tools:
         prompts = TOOL_PROMPTS.get(tool, [])
 
-        # Canvass gets special handling when domains.txt is populated:
-        # it iterates per domain at run time instead of prompting for one.
-        if tool == "canvass" and domains_list:
-            missing = canvass_missing_domains(target, etype)
+        # Per-domain tools (canvass, dnstwist) iterate domains.txt at run time
+        # instead of prompting for a single domain.
+        if tool in PER_DOMAIN_TOOLS and domains_list:
+            missing = missing_domains_for(tool, target, etype)
             if not missing:
-                print(f"[canvass] all {len(domains_list)} domain(s) from domains.txt already scanned — will skip\n")
+                print(f"[{tool}] all {len(domains_list)} domain(s) from domains.txt already done — will skip\n")
                 collected[tool] = None
             else:
-                print(f"[canvass] {len(missing)}/{len(domains_list)} domain(s) still to scan: {', '.join(missing)}\n")
+                print(f"[{tool}] {len(missing)}/{len(domains_list)} domain(s) still to do: {', '.join(missing)}\n")
                 collected[tool] = {"_from_domains_file": True}
             continue
 
@@ -995,12 +1290,11 @@ def cmd_run(args) -> int:
 
         prompted = collected.get(tool)
 
-        # Multi-domain canvass path: iterate domains.txt entries that don't
-        # yet have a brief file, run canvass once per missing domain.
-        if tool == "canvass" and isinstance(prompted, dict) and prompted.get("_from_domains_file"):
-            missing = canvass_missing_domains(target, etype)
+        # Per-domain iteration (canvass, dnstwist).
+        if tool in PER_DOMAIN_TOOLS and isinstance(prompted, dict) and prompted.get("_from_domains_file"):
+            missing = missing_domains_for(tool, target, etype)
             if not missing:
-                print("  ✓ all domains already scanned — skipping")
+                print(f"  ✓ all domains already done — skipping")
                 succeeded.append(tool)
                 print()
                 continue
@@ -1009,17 +1303,24 @@ def cmd_run(args) -> int:
             env["ENGAGEMENT_TYPE"] = etype
             all_ok = True
             for d in missing:
-                print(f"  [canvass → {d}] running...")
+                print(f"  [{tool} → {d}] running...")
+                # Both canvass and dnstwist take the domain as the sole arg.
                 rc = subprocess.run(
-                    [str(wrapper)] + build_tool_args("canvass", {"domain": d}, target),
+                    [str(wrapper)] + build_tool_args(tool, {"domain": d}, target),
                     env=env, stdin=subprocess.DEVNULL,
                 ).returncode
                 if rc == 0:
-                    print(f"  ✓ canvass {d} done")
+                    print(f"  ✓ {tool} {d} done")
                 else:
-                    print(f"  ! canvass {d} exited {rc}")
+                    print(f"  ! {tool} {d} exited {rc}")
                     all_ok = False
-            (succeeded if all_ok else failed).append(tool)
+            if all_ok:
+                succeeded.append(tool)
+            else:
+                failed.append(tool)
+                if tool in CRITICAL_TOOLS:
+                    print(f"  ✗ {tool} CRITICAL — aborting chain")
+                    return 1
             print()
             continue
 
@@ -1073,8 +1374,17 @@ def cmd_run(args) -> int:
             print(f"  ✓ {tool} done")
             succeeded.append(tool)
         else:
-            print(f"  ! {tool} exited {result.returncode} — continuing")
             failed.append(tool)
+            if tool in CRITICAL_TOOLS:
+                print(f"  ✗ {tool} exited {result.returncode} — CRITICAL TOOL FAILED, aborting chain")
+                print(f"    (downstream tools depend on {tool} output; fix and re-run)")
+                print()
+                print(f"✗ auto run aborted: {len(succeeded)}/{len(tools)} succeeded before failure")
+                if skipped:
+                    print(f"  skipped: {', '.join(skipped)}")
+                print(f"  failed:  {', '.join(failed)}")
+                return 1
+            print(f"  ! {tool} exited {result.returncode} — continuing (non-critical)")
 
         print()
 

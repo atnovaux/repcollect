@@ -2,6 +2,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 source "$SCRIPT_DIR/../lib/engagement.sh"
+source "$SCRIPT_DIR/../tool_defaults.conf"
 
 OUTPUT_DIR=$(ensure_engagement_dir ffuf) || exit 1
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -15,6 +16,7 @@ for arg in "$@"; do
     ARGS+=("$arg")
 done
 
+scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] ffuf output -> $OUTFILE" >&2
-"$HOME/go/bin/ffuf" -o "$OUTFILE" -of json "${ARGS[@]}"
+"$HOME/go/bin/ffuf" "${FFUF_DEFAULTS[@]}" -o "$OUTFILE" -of json "${ARGS[@]}"
 exit $?

@@ -277,7 +277,19 @@ if ! grep -qF "$REPKIT_PATH_MARKER" "$ZSHRC" 2>/dev/null; then
     ok "pinned ~/bin to front of PATH in ~/.zshrc"
 fi
 
-# ── Step 7: Summary ─────────────────────────────────────────────────────────
+# ── Step 7: Post-install hooks ─────────────────────────────────────────────
+
+# Nuclei: fetch templates so the first run has something to scan with.
+if [[ -x "$HOME/go/bin/nuclei" ]]; then
+    echo "fetching nuclei templates (~/.local/nuclei-templates)..."
+    if "$HOME/go/bin/nuclei" -ut -duc 2>&1 | tail -3; then
+        ok "nuclei templates updated"
+    else
+        warn "nuclei -ut failed — run manually before first scan"
+    fi
+fi
+
+# ── Step 8: Summary ─────────────────────────────────────────────────────────
 
 echo ""
 echo "══════════════════════════════════════════════"

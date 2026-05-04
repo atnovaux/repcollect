@@ -20,6 +20,7 @@ for arg in "$@"; do
     ARGS+=("$arg")
 done
 
+scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] gowitness output -> $OUTPUT_DIR/" >&2
 "$HOME/go/bin/gowitness" \
     "${ARGS[@]}" \

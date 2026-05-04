@@ -17,5 +17,6 @@ for arg in "$@"; do
     ARGS+=("$arg")
 done
 
+scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] nmap output -> ${BASENAME}.{nmap,xml,gnmap}" >&2
 exec /usr/bin/nmap -oA "$BASENAME" "${ARGS[@]}"

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# repkit wrapper for dnstwist (typosquat / brand impersonation discovery)
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/../lib/engagement.sh"
+source "$SCRIPT_DIR/../tool_defaults.conf"
+
+OUTPUT_DIR=$(ensure_engagement_dir dnstwist) || exit 1
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+DNSTWIST_BIN="$HOME/tools/pytools_venv/bin/dnstwist"
+if [[ ! -x "$DNSTWIST_BIN" ]]; then
+    echo "error: dnstwist not found at $DNSTWIST_BIN. run install.sh." >&2
+    exit 1
+fi
+
+ARGS=()
+DOMAIN=""
+skip_next=0
+for arg in "$@"; do
+    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+    case "$arg" in
+        -o|--output|-f|--format) skip_next=1; continue ;;
+    esac
+    # First non-flag positional arg is the target domain.
+    if [[ -z "$DOMAIN" && "$arg" != -* ]]; then
+        DOMAIN="$arg"
+    fi
+    ARGS+=("$arg")
+done
+
+# Domain-prefixed output filename so multi-domain runs don't collide.
+SAFE_DOMAIN="${DOMAIN//./_}"
+[[ -z "$SAFE_DOMAIN" ]] && SAFE_DOMAIN="run"
+OUTFILE="$OUTPUT_DIR/dnstwist_${SAFE_DOMAIN}_${TIMESTAMP}.json"
+
+# dnstwist generates permutations and resolves them — hits adversary-owned DNS,
+# not the target. No scope_guard.
+echo "[repkit] dnstwist output -> $OUTFILE" >&2
+"$DNSTWIST_BIN" "${DNSTWIST_DEFAULTS[@]}" --format json --output "$OUTFILE" "${ARGS[@]}"
+exit $?
