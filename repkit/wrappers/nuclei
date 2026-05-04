@@ -28,11 +28,14 @@ done
 scope_guard "${ARGS[@]}" || exit 1
 
 # Self-heal: if templates dir is missing, fetch them now.
+# `nuclei -ut` has been unreliable in v3.x — silent no-op on some setups —
+# so we git-clone the templates repo directly.
 TEMPLATE_DIR="$HOME/nuclei-templates"
 if [[ ! -d "$TEMPLATE_DIR" || -z "$(ls -A "$TEMPLATE_DIR" 2>/dev/null)" ]]; then
-    echo "[repkit] nuclei templates missing — fetching with -ut (one-time, ~3 min)" >&2
-    "$HOME/go/bin/nuclei" -ut -duc || {
-        echo "error: nuclei -ut failed. run 'nuclei -ut' manually." >&2
+    echo "[repkit] nuclei templates missing — cloning (one-time, ~30s)" >&2
+    rm -rf "$TEMPLATE_DIR"
+    git clone --depth=1 https://github.com/projectdiscovery/nuclei-templates.git "$TEMPLATE_DIR" || {
+        echo "error: failed to clone nuclei templates from github" >&2
         exit 1
     }
 fi

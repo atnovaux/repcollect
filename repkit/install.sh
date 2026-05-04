@@ -279,13 +279,21 @@ fi
 
 # ── Step 7: Post-install hooks ─────────────────────────────────────────────
 
-# Nuclei: fetch templates so the first run has something to scan with.
+# Nuclei: clone templates repo so the first run has something to scan with.
+# (nuclei -ut has been unreliable in v3.x — silent no-op on some setups.)
 if [[ -x "$HOME/go/bin/nuclei" ]]; then
-    echo "fetching nuclei templates (~/nuclei-templates/)..."
-    if "$HOME/go/bin/nuclei" -ut -duc; then
-        ok "nuclei templates updated"
+    NUCLEI_TPL_DIR="$HOME/nuclei-templates"
+    if [[ -d "$NUCLEI_TPL_DIR" && -n "$(ls -A "$NUCLEI_TPL_DIR" 2>/dev/null)" ]]; then
+        echo "updating nuclei templates..."
+        git -C "$NUCLEI_TPL_DIR" pull --ff-only && ok "nuclei templates pulled" || warn "nuclei template pull failed"
     else
-        warn "nuclei -ut failed — first nuclei run will retry automatically"
+        echo "cloning nuclei templates..."
+        rm -rf "$NUCLEI_TPL_DIR"
+        if git clone --depth=1 https://github.com/projectdiscovery/nuclei-templates.git "$NUCLEI_TPL_DIR"; then
+            ok "nuclei templates cloned"
+        else
+            warn "nuclei templates clone failed — first nuclei run will retry"
+        fi
     fi
 fi
 
