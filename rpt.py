@@ -44,6 +44,21 @@ FFUF_DEFAULT_WORDLISTS = [
     "/usr/share/wordlists/dirb/common.txt",
 ]
 
+# Pass-1 quick wordlist for two-pass per-URL fuzzing.  Catches obvious wins
+# fast (~2500 paths × ~30s/host) before we commit deep-wordlist time.
+FFUF_QUICK_WORDLISTS = [
+    "/usr/share/seclists/Discovery/Web-Content/quickhits.txt",
+    "/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt",
+]
+
+# ffuf pass-1 skips obvious non-fuzzable hosts (auth surfaces, CDN/asset
+# domains) — fuzzing them wastes time and floods output with noise.
+FFUF_SKIP_PATTERN = (
+    r"^https?://(?:login|sso|signin|signup|auth|mfa|owa|sts|adfs|"
+    r"webmail|gateway|cdn|static|assets|media|images?|fonts?)\."
+)
+FFUF_MAX_URLS = 10  # cap per-URL iteration to keep auto-runtime bounded
+
 TOOL_PROMPTS = {
     "canvass":        [("root domain (e.g. example.com)", "domain")],
     "cloud-enum":     [("keywords, comma-separated (e.g. example,examplecorp,example-prod)", "keywords")],
@@ -67,9 +82,12 @@ TOOL_PROMPTS = {
 }
 
 NMAP_PRESETS = {
-    "quick":   ["-T4", "-F"],
-    "full":    ["-T4", "-p-"],
-    "udp":     ["-sU", "-T4", "--top-ports", "100"],
+    # External engagements need service detection (-sV) + default scripts (-sC)
+    # so NSE catches CVE patterns (ProxyShell, MS17-010, expired certs, default
+    # creds). Bare port-discovery is naabu's job, not nmap's.
+    "quick":   ["-T4", "-sV", "-sC", "--top-ports", "1000"],
+    "full":    ["-T4", "-sV", "-sC", "-p-"],
+    "udp":     ["-sU", "-T4", "-sV", "--top-ports", "100"],
     "service": ["-T4", "-sV", "-sC"],
 }
 
@@ -809,6 +827,27 @@ def build_tool_args(tool: str, prompted: dict, target: str) -> list[str]:
     elif tool == "nmap":
         preset = NMAP_PRESETS.get(prompted["scan_type"], NMAP_PRESETS["quick"])
         tgt = prompted["target"]
+
+        # Chain from naabu when available: use the exact open ports it found.
+        # Service-detection flags (-sV -sC) stay; the port-spec is replaced.
+        from os import environ as _env
+        etype_runtime = _env.get("ENGAGEMENT_TYPE", "ext")
+        naabu_hosts, naabu_ports = aggregate_naabu(target, etype_runtime)
+        if naabu_hosts and naabu_ports:
+            cleaned: list[str] = []
+            skip_next = False
+            for arg in preset:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg in ("--top-ports", "-p"):
+                    skip_next = True
+                    continue
+                if arg == "-p-" or arg.startswith("-p"):
+                    continue
+                cleaned.append(arg)
+            return cleaned + ["-p", naabu_ports, "-iL", str(naabu_hosts)]
+
         return preset + (["-iL", tgt] if Path(tgt).is_file() else [tgt])
     elif tool == "httpx":
         inp = prompted["input"]
@@ -1008,6 +1047,44 @@ def aggregate_subdomains(target: str, etype: str) -> Path | None:
     return out
 
 
+def aggregate_naabu(target: str, etype: str) -> tuple[Path | None, str | None]:
+    """Extract live hosts and the union of open ports from naabu's JSONL output.
+    Returns (hosts_file, port_csv) — both are None if naabu never ran or had
+    no findings.
+
+    Used to chain naabu → nmap so nmap fingerprints only the exact ports naabu
+    confirmed open (instead of re-scanning --top-ports 1000)."""
+    import json as _json
+    naabu_dir = get_engagement_base() / target / etype / "naabu"
+    if not naabu_dir.is_dir():
+        return None, None
+    files = sorted(naabu_dir.glob("naabu_*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return None, None
+    hosts: set[str] = set()
+    ports: set[int] = set()
+    for line in files[0].read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+        except ValueError:
+            continue
+        h = obj.get("host") or obj.get("ip")
+        p = obj.get("port")
+        if h and not h.startswith("#"):
+            hosts.add(h)
+        if isinstance(p, int):
+            ports.add(p)
+    if not hosts or not ports:
+        return None, None
+    out = _aggregates_dir(target) / f"{etype}_naabu_hosts.txt"
+    out.write_text("\n".join(sorted(hosts)) + "\n")
+    return out, ",".join(str(p) for p in sorted(ports))
+
+
 def aggregate_dnsx_hosts(target: str, etype: str) -> Path | None:
     """Extract live hostnames + IPs from the newest dnsx_*.json output, dedupe.
     dnsx writes JSONL with `host` and `a` (or other record) fields per line.
@@ -1042,6 +1119,40 @@ def aggregate_dnsx_hosts(target: str, etype: str) -> Path | None:
                 seen.add(host)
                 w.write(host + "\n")
     return out if seen else None
+
+
+def fuzzable_urls(target: str, etype: str) -> list[str]:
+    """Filter httpx-discovered URLs to those worth path-fuzzing.
+
+    Skips:
+      - auth surfaces (login.*, owa.*, sso.*, etc.) — fuzzing yields noise
+      - CDN / static asset hosts (cdn.*, assets.*) — same reason
+    Capped at FFUF_MAX_URLS to keep auto-run time reasonable.
+    """
+    import re as _re
+    base = get_engagement_base() / target / etype / "httpx"
+    if not base.is_dir():
+        return []
+    matches = sorted(base.glob("*_urls.txt"),
+                     key=lambda p: p.stat().st_mtime, reverse=True)
+    if not matches:
+        return []
+    skip = _re.compile(FFUF_SKIP_PATTERN, _re.IGNORECASE)
+    urls: list[str] = []
+    seen: set[str] = set()
+    for line in matches[0].read_text(errors="replace").splitlines():
+        url = line.strip().rstrip("/")
+        if not url or url.startswith("#"):
+            continue
+        if skip.match(url):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) >= FFUF_MAX_URLS:
+            break
+    return urls
 
 
 def aggregate_phase5_urls(target: str, etype: str) -> Path | None:
@@ -1328,6 +1439,31 @@ def gather_auto_inputs(tools: list[str], target: str, etype: str) -> dict | None
                 collected[tool] = {"_from_domains_file": True}
             continue
 
+        # ffuf: when httpx URLs exist, iterate (filtered) URLs at run time —
+        # two-pass quick→deep — instead of prompting for a single URL.
+        if tool == "ffuf":
+            urls_to_fuzz = fuzzable_urls(target, etype)
+            if urls_to_fuzz:
+                wordlist_default = prompt_default("ffuf", "wordlist", target, etype) or ""
+                suffix = f" [{wordlist_default}]" if wordlist_default else ""
+                try:
+                    wl = input(f"[ffuf] iterating {len(urls_to_fuzz)} URL(s) — deep wordlist{suffix}: ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print("\naborted.", file=sys.stderr)
+                    return None
+                if not wl:
+                    if wordlist_default:
+                        wl = wordlist_default
+                    else:
+                        print("  -> will skip ffuf (no wordlist)")
+                        collected[tool] = None
+                        print()
+                        continue
+                collected[tool] = {"_iterate_urls": True, "wordlist": wl}
+                print()
+                continue
+            # else: no httpx URLs — fall through to normal single-URL prompts
+
         # Skip prompts entirely for tools that already have output (resumable).
         if tool_has_output(tool, target, etype):
             print(f"[{tool}] already has output — will skip at run time\n")
@@ -1422,6 +1558,80 @@ def cmd_run(args) -> int:
         print(f"[{i}/{len(tools)}] {tool}")
 
         prompted = collected.get(tool)
+
+        # ffuf: two-pass per-URL fuzzing.
+        #   Pass 1 — quick wordlist (~2500 paths) against every fuzzable URL.
+        #   Pass 2 — deep wordlist only against URLs that had pass-1 hits.
+        # Each ffuf invocation auto-deposits its own JSON in ffuf/.
+        if tool == "ffuf" and isinstance(prompted, dict) and prompted.get("_iterate_urls"):
+            urls = fuzzable_urls(target, etype)
+            if not urls:
+                print("  -> skipping (no fuzzable URLs in httpx output)")
+                skipped.append(tool)
+                print()
+                continue
+
+            deep_wordlist = prompted["wordlist"]
+            quick_wordlist = next(
+                (w for w in FFUF_QUICK_WORDLISTS if Path(w).is_file()),
+                deep_wordlist,
+            )
+
+            wrapper = bin_dir / tool
+            env = os.environ.copy()
+            env["ENGAGEMENT_TYPE"] = etype
+            ffuf_dir = get_engagement_base() / target / etype / "ffuf"
+            all_ok = True
+            urls_with_hits: list[str] = []
+
+            def _run_ffuf(u: str, wl: str, label: str) -> tuple[int, int]:
+                """Run ffuf; return (returncode, hits_count). Hits inferred
+                from the newest ffuf_*.json in the ffuf dir after the run."""
+                import json as _json
+                fuzz_target = f"{u.rstrip('/')}/FUZZ"
+                print(f"  [ffuf {label} → {fuzz_target}] running...")
+                rc = subprocess.run(
+                    [str(wrapper), "-u", fuzz_target, "-w", wl],
+                    env=env, stdin=subprocess.DEVNULL,
+                ).returncode
+                if rc != 0 or not ffuf_dir.is_dir():
+                    return rc, 0
+                latest = sorted(ffuf_dir.glob("ffuf_*.json"),
+                                key=lambda p: p.stat().st_mtime, reverse=True)
+                if not latest:
+                    return rc, 0
+                try:
+                    obj = _json.loads(latest[0].read_text())
+                except (ValueError, OSError):
+                    return rc, 0
+                return rc, len(obj.get("results", []) or [])
+
+            print(f"  pass 1/2: quick wordlist ({Path(quick_wordlist).name}) × {len(urls)} URL(s)")
+            for url in urls:
+                rc, hits = _run_ffuf(url, quick_wordlist, "quick")
+                if rc == 0:
+                    print(f"  ✓ ffuf quick {url} — {hits} hit(s)")
+                    if hits > 0:
+                        urls_with_hits.append(url)
+                else:
+                    print(f"  ! ffuf quick {url} exited {rc}")
+                    all_ok = False
+
+            if urls_with_hits:
+                print(f"  pass 2/2: deep wordlist ({Path(deep_wordlist).name}) × {len(urls_with_hits)} URL(s) with hits")
+                for url in urls_with_hits:
+                    rc, hits = _run_ffuf(url, deep_wordlist, "deep")
+                    if rc == 0:
+                        print(f"  ✓ ffuf deep {url} — {hits} hit(s)")
+                    else:
+                        print(f"  ! ffuf deep {url} exited {rc}")
+                        all_ok = False
+            else:
+                print("  pass 2 skipped — no URLs had pass-1 hits")
+
+            (succeeded if all_ok else failed).append(tool)
+            print()
+            continue
 
         # Per-domain iteration (canvass, dnstwist).
         if tool in PER_DOMAIN_TOOLS and isinstance(prompted, dict) and prompted.get("_from_domains_file"):
