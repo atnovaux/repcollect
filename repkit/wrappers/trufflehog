@@ -8,5 +8,5 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTFILE="$OUTPUT_DIR/trufflehog_${TIMESTAMP}.json"
 
 echo "[repkit] trufflehog output -> $OUTFILE" >&2
-"$HOME/go/bin/trufflehog" --json "$@" | tee "$OUTFILE"
+audit_run trufflehog "$HOME/go/bin/trufflehog" --json "$@" | tee "$OUTFILE"
 exit ${PIPESTATUS[0]}

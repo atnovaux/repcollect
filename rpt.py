@@ -468,6 +468,28 @@ def build_summary(target: str, etype: str, date_stamp: str,
         lines.append(f"- root domains: {len(dom_list)}  ({', '.join(dom_list) if dom_list else 'none'})")
     lines.append("")
 
+    # Audit-trail summary (compliance-focused).
+    audit_jsonl = eng_root / "evidence" / "audit.jsonl"
+    if audit_jsonl.is_file():
+        audit_counts: dict[str, int] = {}
+        for ln in audit_jsonl.read_text(errors="replace").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                obj = json.loads(ln)
+            except ValueError:
+                continue
+            audit_counts[obj.get("kind", "?")] = audit_counts.get(obj.get("kind", "?"), 0) + 1
+        if audit_counts:
+            lines.append("## audit")
+            lines.append("")
+            for k in sorted(audit_counts):
+                lines.append(f"- `{k}`: {audit_counts[k]}")
+            lines.append("")
+            lines.append("_full audit trail in `evidence/audit.html` and `evidence/audit.jsonl`._")
+            lines.append("")
+
     # Per-tool signal extraction.
     type_dir = eng_root / etype
     ran = [d for d in detections if d.found]
@@ -741,6 +763,309 @@ def _extract_tool_signal(tool: str, subdir: Path) -> list[str]:
     return out
 
 
+def _which(binary: str) -> str | None:
+    """Locate a binary on PATH. Returns None if not found."""
+    rc = subprocess.run(["which", binary], capture_output=True, text=True)
+    return rc.stdout.strip() if rc.returncode == 0 else None
+
+
+# Terminal-faithful CSS for the rendered audit screenshots.
+_TERM_CSS = """
+<style>
+  body { background: #1a1b26; color: #c0caf5; font-family: 'Hack', 'DejaVu Sans Mono',
+         'Menlo', monospace; font-size: 13px; margin: 0; padding: 18px 24px;
+         line-height: 1.35; }
+  .prompt { color: #7aa2f7; font-weight: bold; }
+  .at     { color: #bb9af7; }
+  .path   { color: #7dcfff; }
+  .cmd    { color: #c0caf5; }
+  pre { white-space: pre-wrap; word-break: break-all; margin: 0; }
+  .header { color: #565f89; font-size: 11px; margin-bottom: 6px; }
+</style>
+"""
+
+
+def _render_log_to_png(log_path: Path, png_path: Path,
+                       command: str, timestamp: str,
+                       operator: str, host: str) -> bool:
+    """Render an ANSI-colored log to a terminal-style PNG via aha + chromium."""
+    aha = _which("aha")
+    chrome = _which("chromium") or _which("chromium-browser") or _which("google-chrome")
+    if not aha or not chrome:
+        return False
+
+    import tempfile
+    log_text = log_path.read_text(errors="replace")
+    if len(log_text) > 200_000:
+        log_text = log_text[:200_000] + "\n\n[output truncated — see " + log_path.name + "]\n"
+
+    # ANSI → HTML body
+    aha_run = subprocess.run([aha, "--no-header", "--black"],
+                             input=log_text, capture_output=True, text=True)
+    if aha_run.returncode != 0:
+        return False
+    body_html = aha_run.stdout
+
+    prompt = f'<span class="prompt">┌─(</span><span class="at">{operator}@{host}</span><span class="prompt">)-[</span><span class="path">~</span><span class="prompt">]</span>'
+    prompt2 = f'<span class="prompt">└─$</span> <span class="cmd">{_html_escape(command)}</span>'
+    header = f'<div class="header">{timestamp}</div>'
+    full_html = f"<!doctype html><html><head><meta charset='utf-8'>{_TERM_CSS}</head><body><pre>{header}{prompt}\n{prompt2}\n\n{body_html}</pre></body></html>"
+
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
+        f.write(full_html)
+        html_path = f.name
+    try:
+        rc = subprocess.run([
+            chrome, "--headless", "--no-sandbox", "--disable-gpu",
+            "--hide-scrollbars",
+            f"--screenshot={png_path}",
+            "--window-size=1200,4000",
+            f"file://{html_path}",
+        ], capture_output=True).returncode
+        return rc == 0 and png_path.is_file()
+    finally:
+        os.unlink(html_path)
+
+
+def _html_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+             .replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def render_evidence(target: str) -> dict:
+    """Render audit.jsonl into PNGs + audit.html. Called from cmd_collect.
+    Returns counts of what was rendered."""
+    import json as _json
+    import datetime as _dt
+
+    ev_dir = get_engagement_base() / target / "evidence"
+    audit = ev_dir / "audit.jsonl"
+    counts = {"png_rendered": 0, "png_skipped": 0, "events": 0}
+    if not audit.is_file():
+        return counts
+
+    events = []
+    for line in audit.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(_json.loads(line))
+        except ValueError:
+            continue
+    counts["events"] = len(events)
+
+    # Render PNG per tool_run event whose log exists and PNG doesn't.
+    for ev in events:
+        if ev.get("kind") != "tool_run":
+            continue
+        log_rel = ev.get("log_file", "")
+        if not log_rel:
+            continue
+        log_abs = get_engagement_base() / target / log_rel
+        if not log_abs.is_file():
+            counts["png_skipped"] += 1
+            continue
+        # PNG named matching the log timestamp portion.
+        png_name = Path(log_rel).stem + ".png"
+        png_path = ev_dir / "screenshots" / "auto" / png_name
+        if png_path.is_file():
+            continue  # already rendered
+        if _render_log_to_png(
+            log_abs, png_path,
+            command=ev.get("command", ev.get("tool", "")),
+            timestamp=ev.get("ts", ""),
+            operator=ev.get("operator", "operator"),
+            host=ev.get("host", "kali"),
+        ):
+            counts["png_rendered"] += 1
+        else:
+            counts["png_skipped"] += 1
+
+    # Build audit.html — single browseable index of every event.
+    html = _build_audit_html(target, events)
+    (ev_dir / "audit.html").write_text(html, encoding="utf-8")
+
+    return counts
+
+
+def _build_audit_html(target: str, events: list[dict]) -> str:
+    """Single self-contained HTML index of every audit event."""
+    eng_root = get_engagement_base() / target
+    scope_lines = []
+    scope_file = eng_root / "scope.txt"
+    if scope_file.is_file():
+        scope_lines = [
+            l.strip() for l in scope_file.read_text(errors="replace").splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+    domains_lines = []
+    domains_file = eng_root / "domains.txt"
+    if domains_file.is_file():
+        domains_lines = [
+            l.strip() for l in domains_file.read_text(errors="replace").splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+
+    css = """
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: #f5f6fa; color: #2d3748; margin: 0; padding: 24px; }
+    h1, h2 { color: #1a202c; }
+    h1 { border-bottom: 2px solid #4a5568; padding-bottom: 8px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 8px; background: white;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 12px; text-align: left;
+             font-size: 13px; vertical-align: top; }
+    th { background: #edf2f7; font-weight: 600; font-size: 12px; text-transform: uppercase;
+         color: #4a5568; }
+    tr:hover { background: #f7fafc; }
+    .ts { font-family: monospace; color: #4a5568; font-size: 12px; white-space: nowrap; }
+    .ok { color: #2f855a; }
+    .fail { color: #c53030; font-weight: 600; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+             font-weight: 600; text-transform: uppercase; }
+    .b-critical { background: #c53030; color: white; }
+    .b-high     { background: #dd6b20; color: white; }
+    .b-medium   { background: #d69e2e; color: white; }
+    .b-low      { background: #38a169; color: white; }
+    .b-info     { background: #4299e1; color: white; }
+    code { background: #edf2f7; padding: 2px 6px; border-radius: 3px; font-size: 12px;
+           font-family: 'Hack', monospace; }
+    .meta { color: #718096; font-size: 13px; margin-bottom: 16px; }
+    .scope-list { font-family: monospace; font-size: 12px; color: #4a5568;
+                  background: white; padding: 8px 12px; border-radius: 4px;
+                  border-left: 3px solid #4299e1; }
+    a { color: #3182ce; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    img.thumb { max-width: 200px; max-height: 120px; border: 1px solid #cbd5e0; }
+    """
+
+    out = [f"<!doctype html><html><head><meta charset='utf-8'>"
+           f"<title>audit — {_html_escape(target)}</title><style>{css}</style></head><body>"]
+    out.append(f"<h1>engagement audit — {_html_escape(target)}</h1>")
+    out.append(f"<p class='meta'>{len(events)} event(s) · generated {_dt_now()}</p>")
+
+    # Scope summary
+    out.append("<h2>scope</h2>")
+    if scope_lines:
+        out.append("<div class='scope-list'><b>scope.txt</b><br>" +
+                   "<br>".join(_html_escape(l) for l in scope_lines) + "</div>")
+    if domains_lines:
+        out.append("<div class='scope-list' style='margin-top:8px'><b>domains.txt</b><br>" +
+                   "<br>".join(_html_escape(l) for l in domains_lines) + "</div>")
+    if not scope_lines and not domains_lines:
+        out.append("<p class='meta'>(no scope.txt or domains.txt set)</p>")
+
+    # Group events by kind
+    by_kind: dict[str, list[dict]] = {}
+    for ev in events:
+        by_kind.setdefault(ev.get("kind", "?"), []).append(ev)
+
+    if "tool_run" in by_kind:
+        out.append("<h2>tool runs</h2>")
+        out.append("<table><tr><th>timestamp</th><th>tool</th><th>command</th>"
+                   "<th>duration</th><th>exit</th><th>screenshot</th><th>log</th></tr>")
+        for ev in by_kind["tool_run"]:
+            rc = ev.get("exit_code", 0)
+            rc_class = "ok" if rc == 0 else "fail"
+            log_rel = ev.get("log_file", "")
+            png_name = Path(log_rel).stem + ".png" if log_rel else ""
+            png_rel = f"screenshots/auto/{png_name}" if png_name else ""
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td><b>{_html_escape(ev.get('tool', ''))}</b></td>"
+                f"<td><code>{_html_escape((ev.get('command') or '')[:140])}</code></td>"
+                f"<td class='ts'>{ev.get('duration_s', '')}s</td>"
+                f"<td class='{rc_class}'>{rc}</td>"
+                f"<td>{f'<a href={png_rel}><img class=thumb src={png_rel}></a>' if png_rel else ''}</td>"
+                f"<td>{f'<a href={_html_escape(log_rel)}>view</a>' if log_rel else ''}</td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    if "finding" in by_kind:
+        out.append("<h2>findings</h2>")
+        out.append("<table><tr><th>timestamp</th><th>severity</th><th>description</th><th>refs</th></tr>")
+        for ev in by_kind["finding"]:
+            sev = ev.get("severity", "info").lower()
+            refs = ev.get("refs", []) or []
+            refs_html = ", ".join(f"<a href={_html_escape(r)}>{_html_escape(Path(r).name)}</a>" for r in refs)
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td><span class='badge b-{sev}'>{sev}</span></td>"
+                f"<td>{_html_escape(ev.get('description', ''))}</td>"
+                f"<td>{refs_html}</td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    if "manual_screenshot" in by_kind:
+        out.append("<h2>manual screenshots</h2>")
+        out.append("<table><tr><th>timestamp</th><th>label</th><th>url</th><th>image</th></tr>")
+        for ev in by_kind["manual_screenshot"]:
+            path = ev.get("path", "")
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td>{_html_escape(ev.get('label', ''))}</td>"
+                f"<td><code>{_html_escape(ev.get('url', ''))}</code></td>"
+                f"<td><a href={_html_escape(path)}><img class=thumb src={_html_escape(path)}></a></td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    if "file_added" in by_kind:
+        out.append("<h2>files added</h2>")
+        out.append("<table><tr><th>timestamp</th><th>label</th><th>file</th><th>size</th></tr>")
+        for ev in by_kind["file_added"]:
+            path = ev.get("path", "")
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td>{_html_escape(ev.get('label', ''))}</td>"
+                f"<td><a href={_html_escape(path)}>{_html_escape(Path(path).name)}</a></td>"
+                f"<td class='ts'>{ev.get('size', '')} bytes</td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    if "scope_violation" in by_kind:
+        out.append("<h2 style='color:#c53030'>scope violations</h2>")
+        out.append("<table><tr><th>timestamp</th><th>target</th><th>action</th></tr>")
+        for ev in by_kind["scope_violation"]:
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td><code>{_html_escape(ev.get('target', ''))}</code></td>"
+                f"<td class='fail'>{_html_escape(ev.get('action', ''))}</td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    if "note" in by_kind:
+        out.append("<h2>notes</h2>")
+        out.append("<table><tr><th>timestamp</th><th>operator</th><th>text</th></tr>")
+        for ev in by_kind["note"]:
+            out.append(
+                f"<tr>"
+                f"<td class='ts'>{_html_escape(ev.get('ts', ''))}</td>"
+                f"<td>{_html_escape(ev.get('operator', ''))}</td>"
+                f"<td>{_html_escape(ev.get('text', ''))}</td>"
+                f"</tr>"
+            )
+        out.append("</table>")
+
+    out.append("</body></html>")
+    return "\n".join(out)
+
+
+def _dt_now() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+
+
 def create_bundle(target: str, date_stamp: str, etype: str,
                   detections: list[DetectionResult],
                   manifest: dict, fmt: str) -> Path:
@@ -773,6 +1098,16 @@ def create_bundle(target: str, date_stamp: str, etype: str,
             src = eng_root / name
             if src.is_file():
                 shutil.copy2(src, staging / name)
+
+        # Render audit log to PNGs + audit.html before snapshotting evidence/.
+        ev_root = eng_root / "evidence"
+        if ev_root.is_dir():
+            ev_counts = render_evidence(target)
+            print(f"[+] evidence: {ev_counts['events']} event(s), "
+                  f"{ev_counts['png_rendered']} PNG(s) rendered "
+                  f"({ev_counts['png_skipped']} skipped)")
+            # Copy entire evidence/ tree into the bundle.
+            shutil.copytree(ev_root, staging / "evidence", dirs_exist_ok=True)
 
         # Generate an LLM-friendly summary with signal extracted from each tool.
         summary = build_summary(target, etype, date_stamp, detections, eng_root)
@@ -1245,6 +1580,257 @@ def cmd_domains(args) -> int:
         "# example.io\n"
     )
     return _open_in_editor(domains_path_for(target), template)
+
+
+def _evidence_dir(target: str) -> Path:
+    """Return the engagement's evidence dir, creating subdirs if needed."""
+    base = get_engagement_base() / target / "evidence"
+    for sub in ("logs", "screenshots/auto", "screenshots/manual", "files"):
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _audit_append(target: str, kind: str, **fields) -> None:
+    """Append a structured event to evidence/audit.jsonl."""
+    import datetime as _dt
+    import json as _json
+    operator = os.environ.get("OPERATOR") or os.environ.get("USER") or "unknown"
+    host = os.uname().nodename
+    record = {
+        "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "kind": kind,
+        "engagement": target,
+        "etype": os.environ.get("ENGAGEMENT_TYPE", "ext"),
+        "operator": operator,
+        "host": host,
+        **fields,
+    }
+    ev_dir = _evidence_dir(target)
+    with (ev_dir / "audit.jsonl").open("a") as f:
+        f.write(_json.dumps(record) + "\n")
+
+
+def _sha256_file(p: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _slugify(s: str) -> str:
+    import re as _re
+    s = _re.sub(r"https?://", "", s)
+    s = _re.sub(r"[^a-zA-Z0-9_.-]+", "_", s).strip("_.")
+    return s[:60] or "untitled"
+
+
+def cmd_evidence(args) -> int:
+    """No-arg `rpt evidence` — open audit.html in browser if it exists, else
+    print last 20 audit entries."""
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    ev_dir = _evidence_dir(target)
+    audit_html = ev_dir / "audit.html"
+    if audit_html.is_file():
+        for opener in ("xdg-open", "open"):
+            if subprocess.run(["which", opener], capture_output=True).returncode == 0:
+                subprocess.Popen([opener, str(audit_html)])
+                print(f"[+] opening {audit_html}")
+                return 0
+        print(f"audit.html exists but no browser opener found: {audit_html}")
+        return 0
+    audit_jsonl = ev_dir / "audit.jsonl"
+    if not audit_jsonl.is_file():
+        print("no audit log yet. run a tool first or use `rpt evidence note/shot/add`.")
+        return 0
+    print("(audit.html not yet built — run `rpt collect` first. last 20 entries:)")
+    print()
+    lines = audit_jsonl.read_text(errors="replace").splitlines()[-20:]
+    for line in lines:
+        print(line)
+    return 0
+
+
+def cmd_evidence_note(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    text = " ".join(args.text).strip()
+    if not text:
+        print("error: note text required (e.g. rpt evidence note \"<message>\")", file=sys.stderr)
+        return 1
+    _audit_append(target, "note", text=text)
+    print(f"[+] note added to evidence/audit.jsonl")
+    return 0
+
+
+def cmd_evidence_finding(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    sev = args.severity.lower()
+    if sev not in ("critical", "high", "medium", "low", "info"):
+        print(f"error: severity must be one of critical/high/medium/low/info (got '{sev}')", file=sys.stderr)
+        return 1
+    desc = " ".join(args.description).strip()
+    if not desc:
+        print("error: description required", file=sys.stderr)
+        return 1
+    refs = list(args.ref or [])
+    _audit_append(target, "finding", severity=sev, description=desc, refs=refs)
+    print(f"[+] [{sev.upper()}] finding recorded")
+    return 0
+
+
+def cmd_evidence_shot(args) -> int:
+    """Headless-Chrome screenshot of a URL → evidence/screenshots/manual/."""
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    url = args.url
+    label = args.label or _slugify(url)
+    ev_dir = _evidence_dir(target)
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = ev_dir / "screenshots" / "manual" / f"{ts}_{_slugify(label)}.png"
+
+    chrome = next(
+        (b for b in ("chromium", "chromium-browser", "google-chrome", "chrome")
+         if subprocess.run(["which", b], capture_output=True).returncode == 0),
+        None,
+    )
+    if not chrome:
+        print("error: no chromium binary found. apt install chromium.", file=sys.stderr)
+        return 1
+    print(f"[+] capturing screenshot of {url} → {out}")
+    rc = subprocess.run([
+        chrome, "--headless", "--no-sandbox", "--disable-gpu",
+        "--hide-scrollbars",
+        f"--screenshot={out}",
+        "--window-size=1920,1080",
+        url,
+    ], capture_output=True).returncode
+    if rc != 0 or not out.is_file():
+        print(f"error: chrome screenshot failed (rc={rc})", file=sys.stderr)
+        return 1
+    sha = _sha256_file(out)
+    rel_path = str(out.relative_to(get_engagement_base() / target))
+    _audit_append(target, "manual_screenshot",
+                  url=url, label=label, path=rel_path, sha256=sha)
+    print(f"[+] saved + recorded ({sha[:12]}…)")
+    return 0
+
+
+def cmd_evidence_add(args) -> int:
+    """Copy any file into evidence/files/ with timestamp prefix + record."""
+    import shutil as _shutil
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    src = Path(args.file).expanduser()
+    if not src.is_file():
+        print(f"error: file not found: {src}", file=sys.stderr)
+        return 1
+    label = args.label or src.stem
+    ev_dir = _evidence_dir(target)
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = ev_dir / "files" / f"{ts}_{_slugify(label)}_{src.name}"
+    _shutil.copy2(src, dest)
+    sha = _sha256_file(dest)
+    rel_path = str(dest.relative_to(get_engagement_base() / target))
+    _audit_append(target, "file_added",
+                  source=str(src), label=label, path=rel_path, sha256=sha,
+                  size=dest.stat().st_size)
+    print(f"[+] copied to {dest} ({sha[:12]}…)")
+    return 0
+
+
+def cmd_evidence_record(args) -> int:
+    """Wrap an arbitrary command, capture stdout/stderr to evidence/logs/,
+    record audit entry. Use this for ad-hoc commands outside the wrapper layer.
+    """
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    cmd = list(args.command)
+    if not cmd:
+        print("error: command required (e.g. rpt evidence record -- curl https://example.com)", file=sys.stderr)
+        return 1
+    label = args.label or _slugify(cmd[0])
+    ev_dir = _evidence_dir(target)
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_log = ev_dir / "logs" / f"{label}_{ts}.raw.log"
+    clean_log = ev_dir / "logs" / f"{label}_{ts}.log"
+
+    print(f"[+] running: {' '.join(cmd)}")
+    import time as _time
+    start = _time.time()
+    with raw_log.open("wb") as raw_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for chunk in iter(lambda: proc.stdout.read(4096), b""):
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            raw_f.write(chunk)
+        proc.wait()
+    duration = _time.time() - start
+    rc = proc.returncode
+
+    # Strip CR-redraws → clean log.
+    raw_text = raw_log.read_text(errors="replace")
+    import re as _re
+    cleaned = "\n".join(_re.sub(r".*\r", "", line) for line in raw_text.splitlines())
+    clean_log.write_text(cleaned)
+
+    raw_sha = _sha256_file(raw_log)
+    clean_sha = _sha256_file(clean_log)
+    rel_log = str(clean_log.relative_to(get_engagement_base() / target))
+    _audit_append(target, "tool_run",
+                  tool=label, command=" ".join(cmd),
+                  exit_code=rc, duration_s=round(duration, 3),
+                  log_file=rel_log,
+                  log_sha256=clean_sha, raw_log_sha256=raw_sha,
+                  outputs=[])
+    print(f"[+] recorded (exit={rc}, {duration:.1f}s)")
+    return rc
+
+
+def cmd_evidence_ls(args) -> int:
+    target = read_engagement_file()
+    if not target:
+        print("error: no active engagement. run 'rpt use <target>' first.", file=sys.stderr)
+        return 1
+    import json as _json
+    ev_dir = _evidence_dir(target)
+    audit = ev_dir / "audit.jsonl"
+    if not audit.is_file():
+        print("no audit log yet.")
+        return 0
+    counts: dict[str, int] = {}
+    for line in audit.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = _json.loads(line)
+        except ValueError:
+            continue
+        k = obj.get("kind", "?")
+        counts[k] = counts.get(k, 0) + 1
+    print(f"engagement: {target}")
+    print(f"audit log:  {audit}")
+    print()
+    print("event counts:")
+    for k in sorted(counts):
+        print(f"  {k:20s} {counts[k]}")
+    return 0
 
 
 def cmd_update(args) -> int:
@@ -1830,6 +2416,33 @@ def main() -> int:
     subparsers.add_parser("notes", help="edit notes.md for the active engagement")
     subparsers.add_parser("update", help="upgrade every installed tool to its latest version")
 
+    # ── evidence subcommands ────────────────────────────────────────────────
+    ev = subparsers.add_parser("evidence", help="audit-trail / evidence collection")
+    ev_sub = ev.add_subparsers(dest="evidence_cmd")
+
+    ev_note = ev_sub.add_parser("note", help="append a timestamped note to audit.jsonl")
+    ev_note.add_argument("text", nargs="+", help="note text")
+
+    ev_find = ev_sub.add_parser("finding", help="record an operator-attested finding")
+    ev_find.add_argument("severity", help="critical|high|medium|low|info")
+    ev_find.add_argument("description", nargs="+", help="finding description")
+    ev_find.add_argument("--ref", action="append", help="path to a screenshot/file (repeatable)")
+
+    ev_shot = ev_sub.add_parser("shot", help="screenshot a URL → evidence/screenshots/manual/")
+    ev_shot.add_argument("url", help="URL to capture")
+    ev_shot.add_argument("label", nargs="?", help="optional label (default: derived from URL)")
+
+    ev_add = ev_sub.add_parser("add", help="copy a file into evidence/files/ with audit entry")
+    ev_add.add_argument("file", help="path to file")
+    ev_add.add_argument("label", nargs="?", help="optional label")
+
+    ev_rec = ev_sub.add_parser("record", help="wrap an arbitrary command with audit logging")
+    ev_rec.add_argument("--label", help="audit label (default: derived from command)")
+    ev_rec.add_argument("command", nargs=argparse.REMAINDER,
+                        help="command to run (use -- to separate from rpt args)")
+
+    ev_sub.add_parser("ls", help="show audit-event count summary")
+
     run_p = subparsers.add_parser("run", help="run tools for a phase")
     run_p.add_argument("-t", required=True, dest="etype", metavar="TYPE",
                        help=f"engagement type ({', '.join(VALID_TYPES)})")
@@ -1860,6 +2473,17 @@ def main() -> int:
         "run": cmd_run,
         "collect": cmd_collect,
     }
+    if args.command == "evidence":
+        ev_dispatch = {
+            "note": cmd_evidence_note,
+            "finding": cmd_evidence_finding,
+            "shot": cmd_evidence_shot,
+            "add": cmd_evidence_add,
+            "record": cmd_evidence_record,
+            "ls": cmd_evidence_ls,
+            None: cmd_evidence,  # bare `rpt evidence` → opens audit.html
+        }
+        return ev_dispatch[getattr(args, "evidence_cmd", None)](args)
     return dispatch[args.command](args)
 
 

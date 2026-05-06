@@ -34,5 +34,5 @@ done
 
 # cloud_enum hits third-party cloud DNS (no direct target traffic) — no scope_guard.
 echo "[repkit] cloud-enum output -> $OUTFILE" >&2
-"$VENV_PYTHON" "$CLOUD_ENUM" -l "$OUTFILE" "${ARGS[@]}"
+audit_run cloud-enum "$VENV_PYTHON" "$CLOUD_ENUM" -l "$OUTFILE" "${ARGS[@]}"
 exit $?

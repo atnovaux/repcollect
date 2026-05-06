@@ -29,7 +29,7 @@ if [[ -f "$RESUME_FILE" ]]; then
 fi
 
 echo "[repkit] katana output -> $OUTFILE" >&2
-"$HOME/go/bin/katana" "${KATANA_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -jsonl -o "$OUTFILE" "${ARGS[@]}"
+audit_run katana "$HOME/go/bin/katana" "${KATANA_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -jsonl -o "$OUTFILE" "${ARGS[@]}"
 rc=$?
 [[ $rc -eq 0 ]] && rm -f "$RESUME_FILE"
 exit $rc

@@ -47,7 +47,7 @@ if [[ -f "$RESUME_FILE" ]]; then
 fi
 
 echo "[repkit] nuclei output -> $OUTFILE" >&2
-"$HOME/go/bin/nuclei" "${NUCLEI_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -je "$OUTFILE" "${ARGS[@]}"
+audit_run nuclei "$HOME/go/bin/nuclei" "${NUCLEI_DEFAULTS[@]}" "${RESUME_ARGS[@]}" -je "$OUTFILE" "${ARGS[@]}"
 rc=$?
 [[ $rc -eq 0 ]] && rm -f "$RESUME_FILE"
 exit $rc

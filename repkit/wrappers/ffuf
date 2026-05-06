@@ -18,5 +18,5 @@ done
 
 scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] ffuf output -> $OUTFILE" >&2
-"$HOME/go/bin/ffuf" "${FFUF_DEFAULTS[@]}" -o "$OUTFILE" -of json "${ARGS[@]}"
+audit_run ffuf "$HOME/go/bin/ffuf" "${FFUF_DEFAULTS[@]}" -o "$OUTFILE" -of json "${ARGS[@]}"
 exit $?

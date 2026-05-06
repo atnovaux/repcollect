@@ -20,5 +20,5 @@ for arg in "$@"; do
 done
 
 echo "[repkit] teamfiltration output -> $OUTPUT_DIR/" >&2
-"$TF_BIN" --outpath "$OUTPUT_DIR" "${ARGS[@]}"
+audit_run teamfiltration "$TF_BIN" --outpath "$OUTPUT_DIR" "${ARGS[@]}"
 exit $?

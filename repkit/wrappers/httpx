@@ -20,7 +20,7 @@ done
 scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] httpx output -> $OUTFILE" >&2
 echo "[repkit] httpx url list -> $URLFILE" >&2
-"$HOME/go/bin/httpx" "${HTTPX_DEFAULTS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
+audit_run httpx "$HOME/go/bin/httpx" "${HTTPX_DEFAULTS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
 rc=$?
 
 # Extract plain URL list for chaining into gowitness/etc.

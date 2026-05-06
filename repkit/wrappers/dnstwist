@@ -37,5 +37,5 @@ OUTFILE="$OUTPUT_DIR/dnstwist_${SAFE_DOMAIN}_${TIMESTAMP}.json"
 # dnstwist generates permutations and resolves them — hits adversary-owned DNS,
 # not the target. No scope_guard.
 echo "[repkit] dnstwist output -> $OUTFILE" >&2
-"$DNSTWIST_BIN" "${DNSTWIST_DEFAULTS[@]}" --format json --output "$OUTFILE" "${ARGS[@]}"
+audit_run dnstwist "$DNSTWIST_BIN" "${DNSTWIST_DEFAULTS[@]}" --format json --output "$OUTFILE" "${ARGS[@]}"
 exit $?

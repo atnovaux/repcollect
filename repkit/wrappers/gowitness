@@ -22,7 +22,7 @@ done
 
 scope_guard "${ARGS[@]}" || exit 1
 echo "[repkit] gowitness output -> $OUTPUT_DIR/" >&2
-"$HOME/go/bin/gowitness" \
+audit_run gowitness "$HOME/go/bin/gowitness" \
     "${ARGS[@]}" \
     --screenshot-path "$OUTPUT_DIR/screenshots/" \
     --write-db \

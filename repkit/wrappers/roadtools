@@ -30,15 +30,15 @@ case "$SUBCMD" in
                 ARGS+=("$arg")
             done
             echo "[repkit] roadrecon output -> $RUN_DIR/roadrecon.db" >&2
-            "$ROADRECON" gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
+            audit_run roadrecon "$ROADRECON" gather -d "$RUN_DIR/roadrecon.db" "${ARGS[@]}"
         else
-            "$ROADRECON" "$@"
+            audit_run roadrecon "$ROADRECON" "$@"
         fi
         ;;
     roadtx)
         echo "[repkit] roadtx run dir -> $RUN_DIR" >&2
         cd "$RUN_DIR"
-        "$ROADTX" "$@"
+        audit_run roadtx "$ROADTX" "$@"
         ;;
     *)
         echo "[repkit] usage: roadtools <roadrecon|roadtx> [args...]" >&2

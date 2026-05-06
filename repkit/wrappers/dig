@@ -8,5 +8,5 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 OUTFILE="$OUTPUT_DIR/dig_${TIMESTAMP}.txt"
 
 echo "[repkit] dig output -> $OUTFILE" >&2
-/usr/bin/dig "$@" | tee "$OUTFILE"
+audit_run dig /usr/bin/dig "$@" | tee "$OUTFILE"
 exit ${PIPESTATUS[0]}

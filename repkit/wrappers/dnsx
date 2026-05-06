@@ -21,5 +21,5 @@ done
 
 # DNS resolution via public resolvers — no direct target traffic.
 echo "[repkit] dnsx output -> $OUTFILE" >&2
-"$HOME/go/bin/dnsx" "${DNSX_DEFAULTS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
+audit_run dnsx "$HOME/go/bin/dnsx" "${DNSX_DEFAULTS[@]}" -json -o "$OUTFILE" "${ARGS[@]}"
 exit $?
