@@ -82,9 +82,10 @@ evidence_dir() {
 }
 
 # _json_escape <string>   — minimal escaping for embedding in audit.jsonl
-# (use argv, not <<< — here-strings append a newline that breaks JSON keys)
+# Pass via argv (not <<< — here-strings append a trailing newline that ends
+# up inside JSON keys/values).
 _json_escape() {
-    python3 -c 'import json,sys; print(json.dumps(sys.argv[1]), end="")' -- "$1"
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1]), end="")' "$1"
 }
 
 # audit_event <kind> <key=val>...
